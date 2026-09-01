@@ -1,0 +1,61 @@
+import { loadConfig } from "./config.js";
+import { MiClient } from "./mi/client.js";
+import { MiDeviceService } from "./mi/devices.js";
+import { ConversationPoller } from "./mi/poller.js";
+import { SpeakerLoop } from "./mi/speaker.js";
+import { Agent } from "./agent/agent.js";
+import { OpenAICompatLLM } from "./agent/llm.js";
+import { buildSystemPrompt } from "./agent/prompt.js";
+import { DeviceCache } from "./deviceCache.js";
+
+async function main() {
+  const config = loadConfig(process.env);
+  console.log("[app] 配置加载完成，正在登录小米云...");
+
+  const client = new MiClient(config);
+  await client.init();
+  console.log("[app] 小米云登录成功");
+
+  const devices = new MiDeviceService({ client });
+  const cache = new DeviceCache({
+    remote: devices,
+    refreshMs: config.deviceRefreshMs,
+    onRefreshError: (e) => console.error("[cache] 刷新失败（保留旧快照）:", e.message),
+  });
+  await cache.refresh(); // 启动前先建快照
+  cache.start();
+
+  const agent = new Agent({
+    llm: new OpenAICompatLLM({
+      baseUrl: config.llmBaseUrl,
+      apiKey: config.llmApiKey,
+      model: config.llmModel,
+      timeoutMs: config.llmTimeoutMs,
+    }),
+    devices,
+    systemPrompt: () => buildSystemPrompt(cache.snapshot()),
+  });
+
+  const poller = new ConversationPoller((limit) => client.getLatestRecords(limit));
+  const loop = new SpeakerLoop({
+    poller,
+    agent,
+    client,
+    triggerWords: config.triggerWords,
+    pollIntervalMs: config.pollIntervalMs,
+    onError: (e) => console.error("[speaker]", e.message),
+  });
+
+  console.log(`[app] 服务已启动：触发词 [${config.triggerWords.join("、") || "全接管"}]`);
+  process.on("SIGINT", () => {
+    loop.stop();
+    cache.stop();
+    process.exit(0);
+  });
+  await loop.start();
+}
+
+main().catch((err) => {
+  console.error("[app] 启动失败:", err.message);
+  process.exit(1);
+});
