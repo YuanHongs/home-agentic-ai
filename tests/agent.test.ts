@@ -15,7 +15,7 @@ const makeRemote = () => {
     listDevices: vi.fn(async () => [light]),
     getDeviceState: vi.fn(async () => ({ did: "did.light", properties: { On: true } })),
     executeAction: vi.fn(async () => ({ ok: true, message: "已执行 客厅主灯.开关" })),
-    resolveDevice: vi.fn(async (n: string) => (n.includes("灯") ? light : undefined)),
+    resolveDevice: vi.fn(async (n: string) => (n === "客厅主灯" ? light : undefined)),
   };
   return remote;
 };
@@ -69,10 +69,17 @@ describe("Agent.chat", () => {
       { content: "", toolCalls: [toolCall("t2", "control_device", { device: "客厅主灯", action: "On", value: true })] },
       { content: "好了", toolCalls: [] },
     ]);
-    const agent = new Agent({ llm, devices: makeRemote(), systemPrompt });
+    const remote = makeRemote();
+    const agent = new Agent({ llm, devices: remote, systemPrompt });
     expect(await agent.chat("开灯")).toBe("好了");
+    // t1 走失败分支：resolveDevice 未命中，不执行控制；仅 t2 自纠成功后执行一次
+    expect(remote.executeAction).toHaveBeenCalledTimes(1);
+    // 自纠消息：未找到 + 可用设备名单回喂给 LLM
     const toolMsg = llm.received[1].find((m) => m.role === "tool")!;
+    expect(toolMsg.content).toContain("未找到设备");
     expect(toolMsg.content).toContain("客厅主灯"); // 名单在错误信息里
+    // t2 自纠成功后真正执行了控制
+    expect(remote.executeAction).toHaveBeenCalledWith("did.light", "On", true);
   });
 
   it("工具参数 JSON 非法时回喂错误而不是崩溃", async () => {
