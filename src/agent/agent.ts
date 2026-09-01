@@ -53,6 +53,7 @@ export class Agent {
       this.remember(userText, "");
       return FALLBACK_REPLY;
     } catch (err) {
+      console.error("[Agent] LLM 调用失败:", (err as Error).message);
       return FALLBACK_REPLY; // 上层（speaker）负责播报兜底
     }
   }

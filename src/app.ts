@@ -16,7 +16,7 @@ async function main() {
   await client.init();
   console.log("[app] 小米云登录成功");
 
-  const devices = new MiDeviceService({ client });
+  const devices = new MiDeviceService({ client, refreshMs: config.deviceRefreshMs });
   const cache = new DeviceCache({
     remote: devices,
     refreshMs: config.deviceRefreshMs,
@@ -47,11 +47,13 @@ async function main() {
   });
 
   console.log(`[app] 服务已启动：触发词 [${config.triggerWords.join("、") || "全接管"}]`);
-  process.on("SIGINT", () => {
+  const shutdown = () => {
     loop.stop();
     cache.stop();
     process.exit(0);
-  });
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown); // Docker 停止容器的默认信号
   await loop.start();
 }
 

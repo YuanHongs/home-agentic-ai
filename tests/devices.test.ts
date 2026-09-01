@@ -109,4 +109,28 @@ describe("MiDeviceService", () => {
     const state = await svc.getDeviceState("did.light");
     expect(state).toEqual({ did: "did.light", properties: { On: true } });
   });
+
+  it("refreshMs TTL 生效：TTL 内命中缓存不重拉，过期后重新拉取", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeClient();
+      const svc = new MiDeviceService({
+        client: client as unknown as MiClient,
+        refreshMs: 30_000,
+        fetchSpecJson: async () => ({ services: [] }),
+      });
+      await svc.listDevices();
+      expect(client.listRawDevices).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(29_000); // TTL 内：命中缓存
+      await svc.listDevices();
+      expect(client.listRawDevices).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(2_000); // TTL 过期：重新拉取
+      await svc.listDevices();
+      expect(client.listRawDevices).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

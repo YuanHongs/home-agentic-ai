@@ -36,9 +36,13 @@ export class MiClient {
     }
   }
 
-  /** 登录态自愈：服务未初始化或失效时重新登录一次 */
-  async ensureAlive(): Promise<void> {
-    if (!this.miNA || !this.miIOT) {
+  /**
+   * 登录态自愈：服务未初始化或失效时重新登录一次。
+   * force=true 时无条件重新 init（重新登录获取新 token）；
+   * 重登也失败则异常向上冒泡（fail-fast 优于僵尸，运维方式是重启服务）。
+   */
+  async ensureAlive(force = false): Promise<void> {
+    if (force || !this.miNA || !this.miIOT) {
       await this.init();
     }
   }
@@ -56,6 +60,11 @@ export class MiClient {
   /** 拉取小爱对话记录：只保留 TTS/LLM 单答案的用户主动消息（vendor 自 mi-gpt 过滤逻辑） */
   async getLatestRecords(limit: number): Promise<ConversationRecord[]> {
     const conversation: any = await this.na.getConversations({ limit });
+    // mi-service-lite 失败（含重登失败）时返回 undefined 而非抛错——
+    // 必须显式抛出，否则被 ?? [] 吞掉变成空列表，轮询沦为僵尸
+    if (conversation === undefined) {
+      throw new Error("拉取对话失败（可能登录态失效）");
+    }
     const records: any[] = conversation?.records ?? [];
     return records
       .filter(
@@ -74,12 +83,19 @@ export class MiClient {
   async speak(text: string): Promise<void> {
     const clean = text.replace(/\n\s*\n/g, "\n").trim();
     if (!clean) return;
-    await this.iot.doAction(...this.config.ttsCommand, clean);
+    const ok = await this.iot.doAction(...this.config.ttsCommand, clean);
+    if (!ok) console.error("[MiClient] TTS 播报指令下发失败");
   }
 
   /** 全屋设备列表 */
   async listRawDevices(): Promise<RawMiDevice[]> {
-    const devices: any[] = (await this.iot.getDevices()) ?? [];
+    const raw: any = await this.iot.getDevices();
+    // 同 getLatestRecords：undefined 是登录态失效的信号，不能 ?? [] 吞掉，
+    // 否则 DeviceCache 会用空列表覆盖好快照，全屋控制静默瘫痪
+    if (raw === undefined) {
+      throw new Error("拉取设备列表失败（可能登录态失效）");
+    }
+    const devices: any[] = raw;
     return devices.map((d) => ({
       did: String(d.did),
       name: d.name,

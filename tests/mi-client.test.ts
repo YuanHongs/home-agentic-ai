@@ -97,4 +97,41 @@ describe("MiClient", () => {
     await c.ensureAlive();
     expect(getMiNA).toHaveBeenCalledTimes(2);
   });
+
+  it("getConversations 返回 undefined 时抛错（不吞掉登录态失效，激活自愈路径）", async () => {
+    const c = new MiClient(config);
+    await c.init();
+    (c as any).miNA.getConversations.mockResolvedValueOnce(undefined);
+    await expect(c.getLatestRecords(10)).rejects.toThrow("拉取对话失败");
+  });
+
+  it("getDevices 返回 undefined 时抛错（不用空列表覆盖好快照）", async () => {
+    const c = new MiClient(config);
+    await c.init();
+    (c as any).miIOT.getDevices.mockResolvedValueOnce(undefined);
+    await expect(c.listRawDevices()).rejects.toThrow("拉取设备列表失败");
+  });
+
+  it("ensureAlive(true) 无条件强制重登获取新 token", async () => {
+    const c = new MiClient(config);
+    await c.init();
+    expect(getMiNA).toHaveBeenCalledTimes(1);
+    expect(getMiIOT).toHaveBeenCalledTimes(1);
+    await c.ensureAlive(true);
+    expect(getMiNA).toHaveBeenCalledTimes(2);
+    expect(getMiIOT).toHaveBeenCalledTimes(2);
+  });
+
+  it("speak 时 doAction 返回 false 则记录失败日志（失败可见，不静默）", async () => {
+    const c = new MiClient(config);
+    await c.init();
+    (c as any).miIOT.doAction.mockResolvedValueOnce(false);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await c.speak("测试播报");
+      expect(errSpy).toHaveBeenCalledWith("[MiClient] TTS 播报指令下发失败");
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
 });
