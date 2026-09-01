@@ -16,14 +16,17 @@ export interface DeviceServiceOptions {
   refreshMs?: number;
 }
 
-/** 模糊匹配：查询串包含设备名中 ≥2 字的连续片段（如 "客厅的灯" 命中 "客厅主灯" 的 "客厅"） */
-const fuzzyMatch = (query: string, name: string): boolean => {
+/**
+ * 模糊匹配强度：查询串包含设备名中 ≥2 字连续片段的最长长度
+ * （如 "客厅的灯" 命中 "客厅主灯" 的 "客厅" → 2；无命中 → 0）
+ */
+const longestMatchLen = (query: string, name: string): number => {
   for (let len = name.length; len >= 2; len--) {
     for (let start = 0; start + len <= name.length; start++) {
-      if (query.includes(name.slice(start, start + len))) return true;
+      if (query.includes(name.slice(start, start + len))) return len;
     }
   }
-  return false;
+  return 0;
 };
 
 const defaultFetchSpecJson = async (model: string): Promise<unknown> =>
@@ -66,15 +69,33 @@ export class MiDeviceService implements IRemoteDevice {
     return devices;
   }
 
-  /** 设备名解析：did 精确匹配优先，其次名称精确/包含匹配，最后模糊片段匹配 */
+  /** 设备名解析：did 精确匹配优先，其次名称精确/包含匹配，最后全局最优模糊匹配（并列则不猜） */
   async resolveDevice(nameOrDid: string): Promise<DeviceInfo | undefined> {
     const devices = await this.listDevices();
-    return (
+    const exact =
       devices.find((d) => d.did === nameOrDid) ??
-      devices.find((d) => d.name === nameOrDid) ??
-      devices.find((d) => nameOrDid.includes(d.name) || d.name.includes(nameOrDid)) ??
-      devices.find((d) => fuzzyMatch(nameOrDid, d.name))
+      devices.find((d) => d.name === nameOrDid);
+    if (exact) return exact;
+    const substring = devices.find(
+      (d) => nameOrDid.includes(d.name) || d.name.includes(nameOrDid),
     );
+    if (substring) return substring;
+    // 模糊层级：跨全部设备取最长命中片段，唯一全局最优者胜出；
+    // 并列最优（如两盏 "…主灯" 都只命中 "主灯"）时无法区分，返回 undefined 让上层 LLM 自纠
+    let best: DeviceInfo | undefined;
+    let bestLen = 1; // 片段最短 2 字，1 作为"尚无命中"哨兵
+    let tie = false;
+    for (const d of devices) {
+      const len = longestMatchLen(nameOrDid, d.name);
+      if (len > bestLen) {
+        best = d;
+        bestLen = len;
+        tie = false;
+      } else if (len === bestLen && best !== undefined) {
+        tie = true;
+      }
+    }
+    return tie ? undefined : best;
   }
 
   async getDeviceState(did: string): Promise<DeviceState> {

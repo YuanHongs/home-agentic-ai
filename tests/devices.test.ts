@@ -39,6 +39,15 @@ const makeService = (client: MockClient = makeClient()) =>
       model === "philips.light.bulb" ? lightSpec : { services: [] },
   });
 
+/** 目录含两盏同名后缀主灯，用于验证模糊匹配的歧义消解 */
+const makeTwoLightsClient = (): MockClient => ({
+  ...makeClient(),
+  listRawDevices: vi.fn(async () => [
+    { did: "did.light1", name: "客厅主灯", model: "fake.light" },
+    { did: "did.light2", name: "卧室主灯", model: "fake.light" },
+  ]),
+} as unknown as MockClient);
+
 describe("MiDeviceService", () => {
   it("listDevices 合并设备列表与 spec 能力", async () => {
     const svc = makeService();
@@ -59,6 +68,17 @@ describe("MiDeviceService", () => {
   it("resolveDevice 支持 did 精确匹配", async () => {
     const svc = makeService();
     expect((await svc.resolveDevice("did.ac"))?.name).toBe("卧室空调");
+  });
+
+  it("resolveDevice 模糊匹配取全局最优（'客厅的灯' 在两盏主灯中唯一命中客厅主灯）", async () => {
+    const svc = makeService(makeTwoLightsClient());
+    const d = await svc.resolveDevice("客厅的灯");
+    expect(d?.did).toBe("did.light1");
+  });
+
+  it("resolveDevice 模糊匹配并列最优时返回 undefined（'卧室的主灯' 两灯并列，供 LLM 自纠）", async () => {
+    const svc = makeService(makeTwoLightsClient());
+    expect(await svc.resolveDevice("卧室的主灯")).toBeUndefined();
   });
 
   it("executeAction 对 property 能力走 specSet", async () => {
