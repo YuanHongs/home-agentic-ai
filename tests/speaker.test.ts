@@ -73,7 +73,7 @@ describe("SpeakerLoop", () => {
     expect(order).toEqual(["chat:开灯", "speak:ok", "chat:关灯", "speak:ok"]);
   });
 
-  it("轮询抛错时自愈（ensureAlive）且不中断", async () => {
+  it("轮询抛错时自愈（ensureAlive 强制重登）且不中断", async () => {
     let failed = false;
     const deps = makeDeps({ messages: [{ text: "请开灯", timestamp: 100 }] });
     const originalPoll = deps.poller.poll;
@@ -87,6 +87,20 @@ describe("SpeakerLoop", () => {
     const loop = new SpeakerLoop(deps);
     await loop.runOnce();
     expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1);
+    // 不带 force 的 ensureAlive 在 token 过期但实例仍在时空转，必须强制重登
+    expect(deps.client.ensureAlive).toHaveBeenCalledWith(true);
     expect(deps.agent.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("重登也失败时错误冒泡终止（fail-fast，由运维重启恢复）", async () => {
+    const deps = makeDeps({ messages: [] });
+    deps.poller.poll = vi.fn(async () => {
+      throw new Error("auth expired");
+    });
+    deps.client.ensureAlive = vi.fn(async () => {
+      throw new Error("relogin failed");
+    });
+    const loop = new SpeakerLoop(deps);
+    await expect(loop.runOnce()).rejects.toThrow("relogin failed");
   });
 });

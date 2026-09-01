@@ -9,7 +9,7 @@ export interface SpeakerDeps {
   client: {
     pause(): Promise<void>;
     speak(text: string): Promise<void>;
-    ensureAlive(): Promise<void>;
+    ensureAlive(force?: boolean): Promise<void>;
   };
   triggerWords: string[];
   pollIntervalMs: number;
@@ -52,7 +52,9 @@ export class SpeakerLoop {
       msg = await this.deps.poller.poll();
     } catch (err) {
       this.deps.onError?.(err as Error);
-      await this.deps.client.ensureAlive(); // 登录态失效自愈
+      // token 过期但实例仍在时不带 force 的 ensureAlive 会空转，必须强制重登；
+      // 重登也失败则让错误冒泡终止进程（fail-fast，重启是既定运维方式）
+      await this.deps.client.ensureAlive(true);
       return false;
     }
     if (!msg) return true;

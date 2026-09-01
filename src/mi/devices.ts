@@ -40,11 +40,27 @@ const defaultFetchSpecJson = async (model: string): Promise<unknown> =>
 export class MiDeviceService implements IRemoteDevice {
   private cache?: DeviceInfo[];
   private cachedAt?: number;
+  /** 按 model 的能力缓存：MIoT spec 对同一 model 不可变，首次拉取成功后永不再拉 */
+  private readonly capCache = new Map<string, DeviceCapability[]>();
 
   constructor(private readonly opts: DeviceServiceOptions) {}
 
   private get specJson(): (model: string) => Promise<unknown> {
     return this.opts.fetchSpecJson ?? defaultFetchSpecJson;
+  }
+
+  /** 首见 model 拉取并缓存 spec 能力；已知 model 直接复用；瞬时失败不落缓存（下轮可重试） */
+  private async capabilitiesFor(model: string): Promise<DeviceCapability[]> {
+    const cached = this.capCache.get(model);
+    if (cached) return cached;
+    try {
+      const capabilities = parseSpec(model, await this.specJson(model));
+      this.capCache.set(model, capabilities);
+      return capabilities;
+    } catch {
+      // spec 拉取失败不阻塞设备列表；该设备仅暂时失去精细控制能力
+      return [];
+    }
   }
 
   async listDevices(): Promise<DeviceInfo[]> {
@@ -55,12 +71,7 @@ export class MiDeviceService implements IRemoteDevice {
     const raw = await this.opts.client.listRawDevices();
     const devices = await Promise.all(
       raw.map(async (d): Promise<DeviceInfo> => {
-        let capabilities: DeviceCapability[] = [];
-        try {
-          capabilities = parseSpec(d.model, await this.specJson(d.model));
-        } catch {
-          // spec 拉取失败不阻塞设备列表；该设备仅失去精细控制能力
-        }
+        const capabilities = await this.capabilitiesFor(d.model);
         return { did: d.did, name: d.name, model: d.model, room: d.room_name, capabilities };
       }),
     );

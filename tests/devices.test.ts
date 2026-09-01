@@ -133,4 +133,89 @@ describe("MiDeviceService", () => {
       vi.useRealTimers();
     }
   });
+
+  it("TTL 过期后重新拉取目录，但已知 model 不再重复拉取 spec", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeClient();
+      const fetchSpecJson = vi.fn(async () => ({ services: [] }));
+      const svc = new MiDeviceService({
+        client: client as unknown as MiClient,
+        refreshMs: 30_000,
+        fetchSpecJson,
+      });
+      await svc.listDevices();
+      expect(fetchSpecJson).toHaveBeenCalledTimes(2); // 两个 model 各拉一次
+
+      vi.advanceTimersByTime(31_000); // TTL 过期：目录重拉，spec 复用 capCache
+      await svc.listDevices();
+      expect(client.listRawDevices).toHaveBeenCalledTimes(2);
+      expect(fetchSpecJson).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("新设备加入列表时只对新 model 拉取一次 spec", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeClient();
+      const fetchSpecJson = vi.fn(async () => ({ services: [] }));
+      const svc = new MiDeviceService({
+        client: client as unknown as MiClient,
+        refreshMs: 30_000,
+        fetchSpecJson,
+      });
+      await svc.listDevices();
+      expect(fetchSpecJson).toHaveBeenCalledTimes(2);
+
+      client.listRawDevices = vi.fn(async () => [
+        { did: "did.light", name: "客厅主灯", model: "philips.light.bulb" },
+        { did: "did.ac", name: "卧室空调", model: "fake.ac" },
+        { did: "did.new", name: "书房加湿器", model: "fake.humidifier" },
+      ]) as unknown as MockClient["listRawDevices"];
+
+      vi.advanceTimersByTime(31_000);
+      const devices = await svc.listDevices();
+      expect(devices).toHaveLength(3);
+      expect(fetchSpecJson).toHaveBeenCalledTimes(3); // 仅新 model fake.humidifier 多拉一次
+      expect(fetchSpecJson).toHaveBeenLastCalledWith("fake.humidifier");
+
+      // 再次 TTL 过期重拉：三个 model 均已缓存，spec 零请求
+      vi.advanceTimersByTime(31_000);
+      await svc.listDevices();
+      expect(fetchSpecJson).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("spec 瞬时拉取失败不落能力缓存，下轮 TTL 重拉成功后能力恢复", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = makeClient();
+      let failOnce = true;
+      const fetchSpecJson = vi.fn(async (model: string) => {
+        if (model === "philips.light.bulb" && failOnce) {
+          failOnce = false;
+          throw new Error("transient network error");
+        }
+        return model === "philips.light.bulb" ? lightSpec : { services: [] };
+      });
+      const svc = new MiDeviceService({
+        client: client as unknown as MiClient,
+        refreshMs: 30_000,
+        fetchSpecJson,
+      });
+      const first = await svc.listDevices();
+      expect(first.find((d) => d.did === "did.light")?.capabilities).toHaveLength(0);
+
+      vi.advanceTimersByTime(31_000);
+      const second = await svc.listDevices();
+      expect(fetchSpecJson).toHaveBeenCalledTimes(3); // 失败的 model 重试成功
+      expect(second.find((d) => d.did === "did.light")?.capabilities).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
