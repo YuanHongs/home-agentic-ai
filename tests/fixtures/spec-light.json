@@ -1,0 +1,19 @@
+{
+  "services": [
+    { "siid": 1, "description": "Device Information", "properties": [] },
+    {
+      "siid": 2,
+      "description": "Bulb",
+      "properties": [
+        { "piid": 1, "description": "On", "format": "bool", "access": ["read", "write"] },
+        { "piid": 2, "description": "Brightness", "format": "uint8", "access": ["read", "write"], "value-range": [1, 100, 1] },
+        { "piid": 3, "description": "Color Temperature", "format": "uint32", "access": ["read", "write"] },
+        { "piid": 4, "description": "Uptime", "format": "uint64", "access": ["read"] }
+      ],
+      "actions": [
+        { "aiid": 1, "description": "Toggle", "in": [] },
+        { "aiid": 2, "description": "Blink", "in": [{ "piid": 1 }] }
+      ]
+    }
+  ]
+}
