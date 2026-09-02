@@ -54,11 +54,54 @@ describe("resolveUrn", () => {
     );
   });
 
-  it("同 vendor-tail 同版本时取 8 段完整形式（信息更全）", () => {
-    // 7 段 v2 vs 8 段 v2 → 保守取带子设备 service hash 的完整形式
-    expect(resolveUrn("philips.light.bulb2", urns)).toBe(
-      "urn:miot-spec-v2:device:light:0000A00B:philips-bulb2:2:0000C802",
-    );
+  it("同 vendor-tail 同版本时取 7 段（8 段是 mesh 子设备变体，共存时多为不同设备类型）", () => {
+    // 7 段 v2 vs 8 段 v2 → 取 7 段。复审实测（2026-09-02）：同 vendor-tail 共存
+    // 同版本的 7 段与 8 段 URN 几乎全是不同设备类型（如 7 段 Light / 8 段 Switch），
+    // 并非"同一设备的两种编码"，故优先取主体设备的 7 段形式。
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(resolveUrn("philips.light.bulb2", urns)).toBe(
+        "urn:miot-spec-v2:device:light:0000A00B:philips-bulb2:2",
+      );
+      // 同版本多候选（多段数/多类型）是歧义场景：打一行日志让这类设备可观测
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[spec] vendor-tail %s 同版本 %s 存在 %d 个候选 URN（多段数/多类型共存，可能为不同设备），按 7 段优先取 %s",
+        "philips-bulb2",
+        2,
+        2,
+        "urn:miot-spec-v2:device:light:0000A00B:philips-bulb2:2",
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("同版本仅 8 段多类型 tie：照常命中 8 段并打歧义日志", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const list = [
+        "urn:miot-spec-v2:device:light:0000A001:fake-mesh:1:0000C802",
+        "urn:miot-spec-v2:device:switch:0000A001:fake-mesh:1:0000C803",
+      ];
+      expect(resolveUrn("fake.light.mesh", list)).toBe(
+        "urn:miot-spec-v2:device:light:0000A001:fake-mesh:1:0000C802",
+      );
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("唯一候选（无论 7/8 段）不打歧义日志", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(resolveUrn("xiaomi.wifispeaker.l09a", urns)).toBeDefined();
+      expect(resolveUrn("yeelink.light.meshbulb2", urns)).toBeDefined();
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 
