@@ -53,7 +53,7 @@ npm run dev             # 开发模式（改代码自动重启）
 [app] 服务已启动：触发词 [请、小智]
 ```
 
-> 常驻部署建议配进程管理器（`systemd` `Restart=always` 或 Docker `restart: unless-stopped`）。服务遇到无法自愈的故障（如长期断网）会主动退出，靠管理器拉起。
+> 常驻部署**建议配进程管理器**（`systemd` `Restart=always` 或 Docker `restart: unless-stopped`）。服务遇到无法自愈的故障（如超过 10 秒的断网、持续登录失败）会主动退出——**裸跑 `npm start` 时需要手动重启**，配了管理器才会自动拉起。
 
 ## 4. 日常使用
 
