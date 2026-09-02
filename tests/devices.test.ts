@@ -9,13 +9,14 @@ interface MockClient {
   specAction: Mock;
 }
 
+/** 真实 spec 形状：iid 字段 + 英文 description + 中文 comment */
 const lightSpec = {
   services: [
     {
-      siid: 2,
+      iid: 2,
       description: "Bulb",
       properties: [
-        { piid: 1, description: "On", format: "bool", access: ["read", "write"] },
+        { iid: 1, description: "Switch Status", comment: "开关", format: "bool", access: ["read", "write"] },
       ],
       actions: [],
     },
@@ -48,6 +49,15 @@ const makeTwoLightsClient = (): MockClient => ({
   ]),
 } as unknown as MockClient);
 
+/** 目录含两台空调，用于验证 substring 层歧义防御 */
+const makeTwoAcClient = (): MockClient => ({
+  ...makeClient(),
+  listRawDevices: vi.fn(async () => [
+    { did: "did.ac1", name: "客厅空调", model: "fake.ac" },
+    { did: "did.ac2", name: "卧室空调", model: "fake.ac" },
+  ]),
+} as unknown as MockClient);
+
 describe("MiDeviceService", () => {
   it("listDevices 合并设备列表与 spec 能力", async () => {
     const svc = makeService();
@@ -56,7 +66,7 @@ describe("MiDeviceService", () => {
     const light = devices.find((d) => d.did === "did.light")!;
     expect(light.name).toBe("客厅主灯");
     expect(light.capabilities).toHaveLength(1);
-    expect(light.capabilities[0]).toMatchObject({ name: "On", desc: "开关", piid: 1 });
+    expect(light.capabilities[0]).toMatchObject({ name: "Switch Status", desc: "开关", piid: 1 });
   });
 
   it("resolveDevice 支持名称包含匹配（'客厅的灯' -> 客厅主灯）", async () => {
@@ -81,10 +91,26 @@ describe("MiDeviceService", () => {
     expect(await svc.resolveDevice("卧室的主灯")).toBeUndefined();
   });
 
+  it("resolveDevice 空串/纯空白返回 undefined（LLM 缺 device 参数时不命中第一台设备）", async () => {
+    const svc = makeService();
+    expect(await svc.resolveDevice("")).toBeUndefined();
+    expect(await svc.resolveDevice("  ")).toBeUndefined();
+  });
+
+  it("resolveDevice substring 层唯一命中返回该设备（'打开客厅主灯' 包含设备名）", async () => {
+    const svc = makeService();
+    expect((await svc.resolveDevice("打开客厅主灯"))?.did).toBe("did.light");
+  });
+
+  it("resolveDevice substring 层多命中返回 undefined（两台空调查'空调'不猜，供 LLM 澄清）", async () => {
+    const svc = makeService(makeTwoAcClient());
+    expect(await svc.resolveDevice("空调")).toBeUndefined();
+  });
+
   it("executeAction 对 property 能力走 specSet", async () => {
     const client = makeClient();
     const svc = makeService(client);
-    const r = await svc.executeAction("did.light", "On", false);
+    const r = await svc.executeAction("did.light", "Switch Status", false);
     expect(r.ok).toBe(true);
     expect(client.specSet).toHaveBeenCalledWith("did.light", 2, 1, false);
   });
@@ -93,12 +119,12 @@ describe("MiDeviceService", () => {
     const svc = makeService();
     const r = await svc.executeAction("did.light", "Brightness", 80);
     expect(r.ok).toBe(false);
-    expect(r.message).toContain("On");
+    expect(r.message).toContain("Switch Status");
   });
 
   it("executeAction 对不存在的设备返回失败并列出设备名单", async () => {
     const svc = makeService();
-    const r = await svc.executeAction("did.ghost", "On", true);
+    const r = await svc.executeAction("did.ghost", "Switch Status", true);
     expect(r.ok).toBe(false);
     expect(r.message).toContain("客厅主灯");
     expect(r.message).toContain("卧室空调");
@@ -107,7 +133,21 @@ describe("MiDeviceService", () => {
   it("getDeviceState 返回能力名->值映射", async () => {
     const svc = makeService();
     const state = await svc.getDeviceState("did.light");
-    expect(state).toEqual({ did: "did.light", properties: { On: true } });
+    expect(state).toEqual({ did: "did.light", properties: { "Switch Status": true } });
+  });
+
+  it("getDeviceState specGet 返回 undefined 时不抛错，返回空 properties（错误不炸整轮对话）", async () => {
+    const client = makeClient();
+    client.specGet = vi.fn(async () => undefined);
+    const svc = makeService(client);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const state = await svc.getDeviceState("did.light");
+      expect(state).toEqual({ did: "did.light", properties: {} });
+      expect(errSpy).toHaveBeenCalled(); // 失败可见（记录一行日志）
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it("refreshMs TTL 生效：TTL 内命中缓存不重拉，过期后重新拉取", async () => {

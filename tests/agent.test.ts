@@ -7,13 +7,13 @@ const light: DeviceInfo = {
   did: "did.light",
   name: "客厅主灯",
   model: "philips.light.bulb",
-  capabilities: [{ kind: "property", siid: 2, piid: 1, name: "On", desc: "开关", format: "bool", access: ["read", "write"] }],
+  capabilities: [{ kind: "property", siid: 2, piid: 1, name: "Switch Status", desc: "开关", format: "bool", access: ["read", "write"] }],
 };
 
 const makeRemote = () => {
   const remote: IRemoteDevice & { resolveDevice(n: string): Promise<DeviceInfo | undefined> } = {
     listDevices: vi.fn(async () => [light]),
-    getDeviceState: vi.fn(async () => ({ did: "did.light", properties: { On: true } })),
+    getDeviceState: vi.fn(async () => ({ did: "did.light", properties: { "Switch Status": true } })),
     executeAction: vi.fn(async () => ({ ok: true, message: "已执行 客厅主灯.开关" })),
     resolveDevice: vi.fn(async (n: string) => (n === "客厅主灯" ? light : undefined)),
   };
@@ -51,13 +51,13 @@ describe("Agent.chat", () => {
 
   it("工具循环：LLM 先调 control_device，结果回喂后给最终回复", async () => {
     const llm = new FakeLLM([
-      { content: "", toolCalls: [toolCall("t1", "control_device", { device: "客厅主灯", action: "On", value: false })] },
+      { content: "", toolCalls: [toolCall("t1", "control_device", { device: "客厅主灯", action: "Switch Status", value: false })] },
       { content: "晚安，灯已关", toolCalls: [] },
     ]);
     const remote = makeRemote();
     const agent = new Agent({ llm, devices: remote, systemPrompt });
     expect(await agent.chat("请关灯")).toBe("晚安，灯已关");
-    expect(remote.executeAction).toHaveBeenCalledWith("did.light", "On", false);
+    expect(remote.executeAction).toHaveBeenCalledWith("did.light", "Switch Status", false);
     // 第二轮 LLM 收到 tool 结果消息
     const second = llm.received[1];
     expect(second.some((m) => m.role === "tool" && m.content.includes("已执行"))).toBe(true);
@@ -65,8 +65,8 @@ describe("Agent.chat", () => {
 
   it("设备解析失败：把可用设备名单回喂给 LLM 自纠（仅一次）", async () => {
     const llm = new FakeLLM([
-      { content: "", toolCalls: [toolCall("t1", "control_device", { device: "不存在的灯", action: "On", value: true })] },
-      { content: "", toolCalls: [toolCall("t2", "control_device", { device: "客厅主灯", action: "On", value: true })] },
+      { content: "", toolCalls: [toolCall("t1", "control_device", { device: "不存在的灯", action: "Switch Status", value: true })] },
+      { content: "", toolCalls: [toolCall("t2", "control_device", { device: "客厅主灯", action: "Switch Status", value: true })] },
       { content: "好了", toolCalls: [] },
     ]);
     const remote = makeRemote();
@@ -79,7 +79,7 @@ describe("Agent.chat", () => {
     expect(toolMsg.content).toContain("未找到设备");
     expect(toolMsg.content).toContain("客厅主灯"); // 名单在错误信息里
     // t2 自纠成功后真正执行了控制
-    expect(remote.executeAction).toHaveBeenCalledWith("did.light", "On", true);
+    expect(remote.executeAction).toHaveBeenCalledWith("did.light", "Switch Status", true);
   });
 
   it("工具参数 JSON 非法时回喂错误而不是崩溃", async () => {

@@ -1,0 +1,11 @@
+{
+  "instances": [
+    "urn:miot-spec-v2:device:air-conditioner:0000A004:xiaomi-airc-c1:2",
+    "urn:miot-spec-v2:device:speaker:0000A015:xiaomi-l09a:1",
+    "urn:miot-spec-v2:device:speaker:0000A015:xiaomi-l09a:2",
+    "urn:miot-spec-v2:device:speaker:0000A015:roome-l09a:5",
+    "urn:miot-spec-v2:device:light:0000A00A:philips-bulb:1",
+    "urn:miot-spec-v2:device:light:0000A00A:philips-bulb:2",
+    "urn:miot-spec-v2:device:television:0000B004:ropo-tv-x1:1"
+  ]
+}

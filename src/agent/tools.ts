@@ -28,12 +28,12 @@ export function buildToolDefs(): ToolDef[] {
       type: "function",
       function: {
         name: "control_device",
-        description: "控制一台设备。action 为能力名（如 On/Brightness），value 为目标值",
+        description: "控制一台设备。action 为能力名（如 Switch Status/Brightness），value 为目标值",
         parameters: {
           type: "object",
           properties: {
             device: { type: "string", description: "设备名称" },
-            action: { type: "string", description: "能力名，如 On" },
+            action: { type: "string", description: "能力名，如 Switch Status" },
             value: { description: "目标值：bool/数字/字符串，action 类能力可省略" },
           },
           required: ["device", "action"],

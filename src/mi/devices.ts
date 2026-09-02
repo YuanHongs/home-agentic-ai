@@ -82,15 +82,20 @@ export class MiDeviceService implements IRemoteDevice {
 
   /** 设备名解析：did 精确匹配优先，其次名称精确/包含匹配，最后全局最优模糊匹配（并列则不猜） */
   async resolveDevice(nameOrDid: string): Promise<DeviceInfo | undefined> {
+    // 空串防御：LLM 缺 device 参数时会传 ""，includes("") 恒真会误命中第一台设备
+    if (!nameOrDid.trim()) return undefined;
     const devices = await this.listDevices();
     const exact =
       devices.find((d) => d.did === nameOrDid) ??
       devices.find((d) => d.name === nameOrDid);
     if (exact) return exact;
-    const substring = devices.find(
+    // substring 层：与模糊层"并列不猜"对齐——命中多台（如"客厅空调"+"卧室空调查'空调'"）
+    // 返回 undefined 让 LLM 澄清，而不是开列表第一台
+    const substring = devices.filter(
       (d) => nameOrDid.includes(d.name) || d.name.includes(nameOrDid),
     );
-    if (substring) return substring;
+    if (substring.length === 1) return substring[0];
+    if (substring.length > 1) return undefined;
     // 模糊层级：跨全部设备取最长命中片段，唯一全局最优者胜出；
     // 并列最优（如两盏 "…主灯" 都只命中 "主灯"）时无法区分，返回 undefined 让上层 LLM 自纠
     let best: DeviceInfo | undefined;
@@ -118,6 +123,11 @@ export class MiDeviceService implements IRemoteDevice {
     if (readable.length === 0) return { did, properties: {} };
     const entries = readable.map((c) => ({ siid: c.siid, piid: c.piid! }));
     const res = await this.opts.client.specGet(did, entries);
+    // specGet 可能因登录态失效/网络错返回 undefined——防御不炸整轮对话（与 executeAction 对齐）
+    if (!Array.isArray(res)) {
+      console.error(`[MiDeviceService] specGet 返回异常（登录态可能失效），did=${did}`);
+      return { did, properties: {} };
+    }
     const properties: Record<string, unknown> = {};
     res.forEach((item: any, i: number) => {
       if (item?.code === 0) properties[readable[i].name] = item.value;

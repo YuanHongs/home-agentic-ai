@@ -1,7 +1,8 @@
 import type { DeviceCapability } from "../types.js";
 
-/** 常见能力名的中文映射（未命中时保留英文原名） */
+/** 常见能力名的中文映射（spec 无 comment 字段时的回退，未命中时保留英文原名） */
 const ZH: Record<string, string> = {
+  "Switch Status": "开关",
   On: "开关",
   Brightness: "亮度",
   "Color Temperature": "色温",
@@ -14,22 +15,33 @@ const ZH: Record<string, string> = {
   "Current Temperature": "当前温度",
 };
 
+/**
+ * 真实 MIoT spec JSON 形状（实测 2026-09-02）：
+ * 每层都用 `iid`（service.iid 即 siid、property.iid 即 piid、action.iid 即 aiid）；
+ * `description` 是英文，`comment` 是中文。
+ */
 interface SpecProperty {
-  piid: number;
+  iid: number;
   description: string;
+  comment?: string;
   format?: string;
   access?: string[];
 }
 interface SpecAction {
-  aiid: number;
+  iid: number;
   description: string;
+  comment?: string;
 }
 interface SpecService {
-  siid: number;
+  iid: number;
   description: string;
   properties?: SpecProperty[];
   actions?: SpecAction[];
 }
+
+/** desc 取值顺序：中文 comment 优先，其次 ZH 映射表，最后英文 description 原文 */
+const descOf = (item: { description: string; comment?: string }): string =>
+  item.comment ?? ZH[item.description] ?? item.description;
 
 export function parseSpec(model: string, specJson: unknown): DeviceCapability[] {
   const services: SpecService[] = (specJson as { services?: SpecService[] })?.services ?? [];
@@ -41,10 +53,10 @@ export function parseSpec(model: string, specJson: unknown): DeviceCapability[] 
       if (!writable) continue;
       caps.push({
         kind: "property",
-        siid: svc.siid,
-        piid: prop.piid,
+        siid: svc.iid,
+        piid: prop.iid,
         name: prop.description,
-        desc: ZH[prop.description] ?? prop.description,
+        desc: descOf(prop),
         format: prop.format,
         access: prop.access,
       });
@@ -52,20 +64,80 @@ export function parseSpec(model: string, specJson: unknown): DeviceCapability[] 
     for (const act of svc.actions ?? []) {
       caps.push({
         kind: "action",
-        siid: svc.siid,
-        aiid: act.aiid,
+        siid: svc.iid,
+        aiid: act.iid,
         name: act.description,
-        desc: ZH[act.description] ?? act.description,
+        desc: descOf(act),
       });
     }
   }
   return caps;
 }
 
-/** 从 home.miot-spec.com 拉取设备 spec（httpGet 注入以便测试） */
+/** 从 miot-spec.org 拉取设备 spec（httpGet 注入以便测试）。
+ *  实测（2026-09-02）：instance 端点只收 URN 不收 model 名，且 home.miot-spec.com 已 404；
+ *  故先拉全量 instances 列表（进程内缓存，列表只增不改），解析出 URN 后再拉具体 spec。 */
+const INSTANCES_URL = "https://miot-spec.org/miot-spec-v2/instances";
+const INSTANCE_URL = "https://miot-spec.org/miot-spec-v2/instance";
+
+/** instances 列表缓存：列表只增不改，拉一次够用；并发去重靠 in-flight promise */
+let instancesCache: string[] | undefined;
+let instancesInflight: Promise<string[]> | undefined;
+
+/** 测试隔离用：清空 instances 进程内缓存 */
+export function _resetInstancesCacheForTest(): void {
+  instancesCache = undefined;
+  instancesInflight = undefined;
+}
+
+/**
+ * 纯函数：按 model 解析对应的 spec URN。
+ * 映射规律（实测）：model 按 "." 切分，首段=vendor、末段=型号尾；
+ * URN 第5段恰为 `vendor-型号尾`（中间的 type 词不对应，不能用作匹配条件）；
+ * 多个 URN 命中时取版本号（末段）最大者。
+ */
+export function resolveUrn(model: string, instances: string[]): string | undefined {
+  const parts = model.split(".");
+  if (parts.length < 2) return undefined;
+  const [vendor, tail] = [parts[0], parts[parts.length - 1]];
+  const want = `${vendor}-${tail}`;
+  let best: string | undefined;
+  let bestVersion = -1;
+  for (const urn of instances) {
+    const seg = urn.split(":"); // [urn, miot-spec-v2, device, <type>, <hash>, <vendor-tail>, <version>]
+    if (seg.length !== 7 || seg[5] !== want) continue;
+    const version = Number(seg[6]);
+    if (Number.isNaN(version)) continue;
+    if (version > bestVersion) {
+      best = urn;
+      bestVersion = version;
+    }
+  }
+  return best;
+}
+
+async function getInstances(httpGet: (url: string) => Promise<unknown>): Promise<string[]> {
+  if (instancesCache) return instancesCache;
+  if (!instancesInflight) {
+    instancesInflight = (async () => {
+      const res = await httpGet(INSTANCES_URL);
+      const list = (res as { instances?: string[] })?.instances;
+      if (!Array.isArray(list)) throw new Error("miot-spec instances 响应格式异常");
+      instancesCache = list;
+      return list;
+    })().finally(() => {
+      instancesInflight = undefined; // 失败不占坑，下次可重试
+    });
+  }
+  return instancesInflight;
+}
+
 export async function fetchSpec(
   model: string,
   httpGet: (url: string) => Promise<unknown>,
 ): Promise<unknown> {
-  return httpGet(`https://home.miot-spec.com/miot-spec-v2/instance?type=${encodeURIComponent(model)}`);
+  const instances = await getInstances(httpGet);
+  const urn = resolveUrn(model, instances);
+  if (!urn) return undefined; // model 不在 spec 库：按无能力处理，不抛错
+  return httpGet(`${INSTANCE_URL}?type=${encodeURIComponent(urn)}`);
 }

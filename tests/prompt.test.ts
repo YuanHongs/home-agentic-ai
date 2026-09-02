@@ -8,7 +8,7 @@ const devices: DeviceInfo[] = [
     name: "客厅主灯",
     model: "philips.light.bulb",
     capabilities: [
-      { kind: "property", siid: 2, piid: 1, name: "On", desc: "开关", format: "bool", access: ["read", "write"] },
+      { kind: "property", siid: 2, piid: 1, name: "Switch Status", desc: "开关", format: "bool", access: ["read", "write"] },
       { kind: "property", siid: 2, piid: 2, name: "Brightness", desc: "亮度", format: "uint8", access: ["read", "write"] },
     ],
   },
