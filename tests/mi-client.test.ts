@@ -137,4 +137,28 @@ describe("MiClient", () => {
       errSpy.mockRestore();
     }
   });
+
+  it("speak 超过 200 字时截断到 200 字加省略号（防 LLM 长文刷屏）", async () => {
+    const c = new MiClient(config);
+    await c.init();
+    await c.speak("长".repeat(250));
+    const miIOT: any = (c as any).miIOT;
+    const sent: string = miIOT.doAction.mock.calls[0][2];
+    expect(sent.length).toBe(202); // 200 字 + "……"
+    expect(sent.startsWith("长".repeat(200))).toBe(true);
+    expect(sent.endsWith("……")).toBe(true);
+  });
+
+  it("pause 返回 false 时记录失败日志（失败可见，不静默）", async () => {
+    const c = new MiClient(config);
+    await c.init();
+    (c as any).miNA.pause.mockResolvedValueOnce(false);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await c.pause();
+      expect(errSpy).toHaveBeenCalledWith("[MiClient] pause 指令下发失败");
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
 });

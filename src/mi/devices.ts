@@ -31,7 +31,8 @@ const longestMatchLen = (query: string, name: string): number => {
 
 const defaultFetchSpecJson = async (model: string): Promise<unknown> =>
   fetchSpec(model, async (url) => {
-    const res = await fetch(url);
+    // miot-spec.org 偶发挂起：10s 超时避免设备列表被单个请求卡死
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) throw new Error(`spec 拉取失败 ${res.status}: ${model}`);
     return res.json();
   });
@@ -57,8 +58,13 @@ export class MiDeviceService implements IRemoteDevice {
       const capabilities = parseSpec(model, await this.specJson(model));
       this.capCache.set(model, capabilities);
       return capabilities;
-    } catch {
-      // spec 拉取失败不阻塞设备列表；该设备仅暂时失去精细控制能力
+    } catch (err) {
+      // spec 拉取失败（含 instances 列表失败，见 spec.ts）不阻塞设备列表；
+      // 该设备仅暂时失去精细控制能力——留一行日志保证失败可观测
+      console.error(
+        `[MiDeviceService] spec 拉取失败（${model}），该设备暂失精细控制:`,
+        (err as Error).message,
+      );
       return [];
     }
   }

@@ -6,7 +6,10 @@ const envSchema = z.object({
   MI_DID: z.string().min(1),
   TTS_COMMAND: z.string().default("3,1"),
   WAKEUP_COMMAND: z.string().default("3,2"),
-  POLL_INTERVAL_MS: z.coerce.number().default(1000),
+  POLL_INTERVAL_MS: z.coerce
+    .number()
+    .min(500, "POLL_INTERVAL_MS 最低 500ms，过快轮询会打爆小米云接口")
+    .default(1000),
   TRIGGER_WORDS: z.string().default("请,小智"),
   LLM_BASE_URL: z.string().url(),
   LLM_API_KEY: z.string().min(1),
@@ -41,7 +44,10 @@ export interface Config {
 export function loadConfig(env: Record<string, string | undefined>): Config {
   const parsed = envSchema.safeParse(env);
   if (!parsed.success) {
-    const fields = parsed.error.issues.map((i) => i.path.join(".")).join(", ");
+    // 带上校验消息（如 min(500) 的"最低 500ms"提示），不能只报字段名
+    const fields = parsed.error.issues
+      .map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join(", ");
     throw new Error(`配置缺失或非法: ${fields}`);
   }
   const e = parsed.data;

@@ -76,13 +76,16 @@ export class MiClient {
 
   /** 盲发停止指令：打断小爱当前播报（不回读播放状态——目标机型不支持） */
   async pause(): Promise<void> {
-    await this.na.pause();
+    const ok = await this.na.pause();
+    if (!ok) console.error("[MiClient] pause 指令下发失败");
   }
 
   /** 用小爱原生 TTS 播报文本（L09A: doAction(3,1,text)） */
   async speak(text: string): Promise<void> {
-    const clean = text.replace(/\n\s*\n/g, "\n").trim();
+    let clean = text.replace(/\n\s*\n/g, "\n").trim();
     if (!clean) return;
+    // LLM 违反"简短"约束返回长文时截断，避免小爱长时间霸占播报
+    if (clean.length > 200) clean = clean.slice(0, 200) + "……";
     const ok = await this.iot.doAction(...this.config.ttsCommand, clean);
     if (!ok) console.error("[MiClient] TTS 播报指令下发失败");
   }

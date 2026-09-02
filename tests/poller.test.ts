@@ -36,6 +36,42 @@ describe("ConversationPoller", () => {
     expect(await p.poll()).toBeUndefined();
   });
 
+  it("同一秒内先后两条消息在同一次拉取中都逐条吐出（不因同秒被吞）", async () => {
+    let records: ConversationRecord[] = [];
+    const fetcher = vi.fn(async () => [...records]);
+    const p = new ConversationPoller(fetcher);
+    await p.poll(); // 空拉取建游标
+    records = [rec("第二条", 100), rec("第一条", 100)]; // 从新到旧
+    expect(await p.poll()).toEqual(rec("第一条", 100));
+    expect(await p.poll()).toEqual(rec("第二条", 100));
+    expect(await p.poll()).toBeUndefined();
+  });
+
+  it("同秒第二条在下一轮 poll 才出现时仍能吐出（游标含同秒序号）", async () => {
+    let records = [rec("旧消息", 100)];
+    const fetcher = vi.fn(async () => [...records]);
+    const p = new ConversationPoller(fetcher);
+    await p.poll(); // cursor = {ts:100, 同秒已见 1 条}
+    records = [rec("第一条", 200), rec("旧消息", 100)];
+    expect(await p.poll()).toEqual(rec("第一条", 200));
+    // 第二条与第一条同秒，晚一轮才出现在拉取结果里
+    records = [rec("第二条", 200), rec("第一条", 200), rec("旧消息", 100)];
+    expect(await p.poll()).toEqual(rec("第二条", 200));
+    expect(await p.poll()).toBeUndefined();
+  });
+
+  it("跨秒混合时同秒消息保持时间顺序（秒内后发的后吐）", async () => {
+    let records = [rec("旧", 50)];
+    const fetcher = vi.fn(async () => [...records]);
+    const p = new ConversationPoller(fetcher);
+    await p.poll();
+    records = [rec("新秒", 200), rec("同秒二", 100), rec("同秒一", 100), rec("旧", 50)];
+    expect(await p.poll()).toEqual(rec("同秒一", 100));
+    expect(await p.poll()).toEqual(rec("同秒二", 100));
+    expect(await p.poll()).toEqual(rec("新秒", 200));
+    expect(await p.poll()).toBeUndefined();
+  });
+
   it("fetcher 抛错时 poll 透传异常（由上层重试策略处理）", async () => {
     const fetcher = vi.fn(async () => {
       throw new Error("network down");

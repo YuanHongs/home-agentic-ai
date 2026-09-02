@@ -34,11 +34,14 @@ export class Agent {
     ];
     try {
       let reply = await this.opts.llm.chat(messages, this.tools);
+      let rounds = 0; // 实际执行的工具轮数（成功路径日志用）
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         if (reply.toolCalls.length === 0) {
           this.remember(userText, reply.content);
+          console.log("[agent] 回复完成，工具轮数:", rounds);
           return reply.content || FALLBACK_REPLY;
         }
+        rounds++;
         messages.push({
           role: "assistant",
           content: reply.content,
@@ -51,6 +54,7 @@ export class Agent {
         reply = await this.opts.llm.chat(messages, this.tools);
       }
       this.remember(userText, "");
+      console.log("[agent] 回复完成，工具轮数:", rounds);
       return FALLBACK_REPLY;
     } catch (err) {
       console.error("[Agent] LLM 调用失败:", (err as Error).message);
@@ -62,7 +66,10 @@ export class Agent {
     this.history.push({ role: "user", content: userText });
     if (assistantText) this.history.push({ role: "assistant", content: assistantText });
     if (this.history.length > HISTORY_LIMIT) {
-      this.history = this.history.slice(-HISTORY_LIMIT);
+      const sliced = this.history.slice(-HISTORY_LIMIT);
+      // 切片可能落在 assistant 上（如 5 组问答后跟一条无回复的 user）：
+      // 部分国产端点要求首条非 system 消息为 user，切成 assistant 开头会 400
+      this.history = sliced[0]?.role === "assistant" ? sliced.slice(1) : sliced;
     }
   }
 

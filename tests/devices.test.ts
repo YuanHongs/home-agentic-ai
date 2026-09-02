@@ -258,4 +258,24 @@ describe("MiDeviceService", () => {
       vi.useRealTimers();
     }
   });
+
+  it("spec 拉取失败时记录一行带 model 名的日志（失败可见，不阻塞设备列表）", async () => {
+    const client = makeClient();
+    const svc = new MiDeviceService({
+      client: client as unknown as MiClient,
+      fetchSpecJson: async (model) => {
+        if (model === "philips.light.bulb") throw new Error("spec timeout");
+        return { services: [] };
+      },
+    });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const devices = await svc.listDevices();
+      expect(devices.find((d) => d.did === "did.light")?.capabilities).toHaveLength(0);
+      const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(logged).toContain("philips.light.bulb");
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
 });

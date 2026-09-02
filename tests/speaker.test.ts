@@ -23,7 +23,14 @@ const makeDeps = (o: MockDeps) => {
       return msg;
     }),
   };
-  return { poller, agent, client, triggerWords: ["请"], pollIntervalMs: 0 };
+  return {
+    poller,
+    agent,
+    client,
+    triggerWords: ["请"],
+    pollIntervalMs: 0,
+    onError: vi.fn(),
+  };
 };
 
 describe("SpeakerLoop", () => {
@@ -92,8 +99,24 @@ describe("SpeakerLoop", () => {
     expect(deps.agent.chat).toHaveBeenCalledTimes(1);
   });
 
-  it("重登也失败时错误冒泡终止（fail-fast，由运维重启恢复）", async () => {
+  it("重登连续失败 9 次内不终止（容忍瞬时网络抖动），下轮 poll 自愈", async () => {
     const deps = makeDeps({ messages: [] });
+    deps.poller.poll = vi.fn(async () => {
+      throw new Error("auth expired");
+    });
+    let fails = 0;
+    deps.client.ensureAlive = vi.fn(async () => {
+      fails++;
+      if (fails <= 9) throw new Error("relogin failed");
+    });
+    const loop = new SpeakerLoop(deps);
+    await expect(loop.runOnce()).resolves.toBeUndefined(); // 不冒泡
+    expect(deps.client.ensureAlive).toHaveBeenCalled(); // 每轮都在重试重登
+  });
+
+  it("重登连续失败达到 10 次才冒泡终止（真凭证错误/长期断网）", async () => {
+    const deps = makeDeps({ messages: [] });
+    deps.onError = vi.fn();
     deps.poller.poll = vi.fn(async () => {
       throw new Error("auth expired");
     });
@@ -102,5 +125,64 @@ describe("SpeakerLoop", () => {
     });
     const loop = new SpeakerLoop(deps);
     await expect(loop.runOnce()).rejects.toThrow("relogin failed");
+    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(10);
+    expect(deps.onError).toHaveBeenCalledWith(new Error("relogin failed"));
+  });
+
+  it("poll 成功后失败计数归零：抖动自愈后的失败重新计数", async () => {
+    const deps = makeDeps({ messages: [{ text: "请开灯", timestamp: 100 }] });
+    let pollShouldFail = true;
+    const originalPoll = deps.poller.poll;
+    deps.poller.poll = vi.fn(async () => {
+      if (pollShouldFail) throw new Error("auth expired");
+      return originalPoll();
+    });
+    let reloginFailures = 0;
+    deps.client.ensureAlive = vi.fn(async () => {
+      reloginFailures++;
+      if (reloginFailures <= 3) throw new Error("relogin failed");
+      pollShouldFail = false; // 重登成功，网络恢复
+    });
+    const loop = new SpeakerLoop(deps);
+    await loop.runOnce();
+    expect(deps.agent.chat).toHaveBeenCalledTimes(1); // 自愈后正常处理消息
+  });
+
+  it("handle 开头打印 🔥 触发日志（成功路径可观测）", async () => {
+    const deps = makeDeps({ messages: [{ text: "请开灯", timestamp: 100 }] });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const loop = new SpeakerLoop(deps);
+      await loop.runOnce();
+      expect(logSpy).toHaveBeenCalledWith("🔥 开灯");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("连续指令时第二条的 pause 等上一条 TTS 估测播完再发（不掐断自己）", async () => {
+    vi.useFakeTimers();
+    try {
+      const deps = makeDeps({
+        messages: [
+          { text: "请开灯", timestamp: 100 },
+          { text: "请关灯", timestamp: 200 },
+        ],
+        agentReply: "一二三四五", // 5 字 × 250ms/字 ≈ 1250ms
+      });
+      const loop = new SpeakerLoop(deps);
+      const done = loop.runOnce();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      // 第一条无前序播报，pause 立即执行；第二条进入估测等待
+      expect(deps.client.pause).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(600); // 600ms < 1250ms，尚未 pause
+      expect(deps.client.pause).toHaveBeenCalledTimes(1);
+      await vi.runAllTimersAsync(); // 估测播完
+      expect(deps.client.pause).toHaveBeenCalledTimes(2);
+      await done;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

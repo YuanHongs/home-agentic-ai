@@ -37,4 +37,10 @@ describe("loadConfig", () => {
       /LLM_API_KEY/,
     );
   });
+
+  it("POLL_INTERVAL_MS 低于 500ms 时抛错并提示最低值", () => {
+    expect(() => loadConfig({ ...validEnv, POLL_INTERVAL_MS: "100" })).toThrow(
+      /最低 500ms/,
+    );
+  });
 });

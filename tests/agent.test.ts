@@ -111,4 +111,41 @@ describe("Agent.chat", () => {
     const userMsgs = messages.filter((m) => m.role === "user");
     expect(userMsgs.map((m) => m.content)).toEqual(["第一句", "第二句"]);
   });
+
+  it("返回前打印回复完成日志，含实际执行的工具轮数（成功路径可观测）", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const llm = new FakeLLM([
+        { content: "", toolCalls: [toolCall("t1", "list_devices", {})] },
+        { content: "好了", toolCalls: [] },
+      ]);
+      const agent = new Agent({ llm, devices: makeRemote(), systemPrompt });
+      await agent.chat("看看设备");
+      expect(logSpy).toHaveBeenCalledWith("[agent] 回复完成，工具轮数:", 1);
+      // 纯文本路径轮数为 0
+      llm.replies.push({ content: "好", toolCalls: [] });
+      await agent.chat("再看看");
+      expect(logSpy).toHaveBeenLastCalledWith("[agent] 回复完成，工具轮数:", 0);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("历史切片后首条历史消息保证是 user（部分国产端点要求首条非 system 为 user）", async () => {
+    const llm = new FakeLLM([]);
+    const agent = new Agent({ llm, devices: makeRemote(), systemPrompt });
+    // 构造 11 条历史：5 组 user/assistant + 尾部 user（空回复不落 assistant）
+    for (let i = 0; i < 5; i++) {
+      llm.replies.push({ content: `回${i}`, toolCalls: [] });
+      await agent.chat(`问${i}`);
+    }
+    llm.replies.push({ content: "", toolCalls: [] }); // 空回复：只落 user
+    await agent.chat("问5");
+    // 此时历史 11 条，slice(-8) 若不修正会切成 assistant 开头
+    llm.replies.push({ content: "ok", toolCalls: [] });
+    await agent.chat("问6");
+    const messages = llm.received.at(-1)!;
+    expect(messages[0].role).toBe("system");
+    expect(messages[1].role).toBe("user");
+  });
 });

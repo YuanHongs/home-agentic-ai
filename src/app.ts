@@ -8,12 +8,33 @@ import { OpenAICompatLLM } from "./agent/llm.js";
 import { buildSystemPrompt } from "./agent/prompt.js";
 import { DeviceCache } from "./deviceCache.js";
 
+/** 启动登录重试：网络未就绪时指数退避重试，避免崩溃循环砸小米云登录接口 */
+const INIT_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 40_000]; // 最多 5 次尝试
+
+async function initWithRetry(client: MiClient): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await client.init();
+      return;
+    } catch (err) {
+      if (attempt > INIT_RETRY_DELAYS_MS.length) throw err; // 全部失败：真凭证错误
+      const waitMs = INIT_RETRY_DELAYS_MS[attempt - 1];
+      console.error(
+        `[app] 小米云登录失败（第 ${attempt}/${INIT_RETRY_DELAYS_MS.length + 1} 次），` +
+          `${waitMs / 1000}s 后重试:`,
+        (err as Error).message,
+      );
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+}
+
 async function main() {
   const config = loadConfig(process.env);
   console.log("[app] 配置加载完成，正在登录小米云...");
 
   const client = new MiClient(config);
-  await client.init();
+  await initWithRetry(client);
   console.log("[app] 小米云登录成功");
 
   const devices = new MiDeviceService({ client, refreshMs: config.deviceRefreshMs });
