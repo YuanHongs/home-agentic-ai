@@ -93,8 +93,11 @@ export function _resetInstancesCacheForTest(): void {
 /**
  * 纯函数：按 model 解析对应的 spec URN。
  * 映射规律（实测）：model 按 "." 切分，首段=vendor、末段=型号尾；
- * URN 第5段恰为 `vendor-型号尾`（中间的 type 词不对应，不能用作匹配条件）；
- * 多个 URN 命中时取版本号（末段）最大者。
+ * URN 第6段恰为 `vendor-型号尾`（中间的 type 词不对应，不能用作匹配条件）；
+ * 第7段为版本号，多个 URN 命中时取版本号最大者；版本相同时取 8 段完整形式。
+ * 8 段 URN（实测占 28%）是 BLE-mesh 网关下挂的第三方子设备，尾部多一段
+ * 子设备 service hash（如 `...:yeelink-meshbulb2:1:0000C802`），其中
+ * 11,807 个 vendor-tail 只以 8 段形式存在——hash 不参与匹配但保留在返回值里。
  */
 export function resolveUrn(model: string, instances: string[]): string | undefined {
   const parts = model.split(".");
@@ -103,14 +106,17 @@ export function resolveUrn(model: string, instances: string[]): string | undefin
   const want = `${vendor}-${tail}`;
   let best: string | undefined;
   let bestVersion = -1;
+  let bestIsFull = false; // 命中的是否为 8 段完整形式（含子设备 service hash）
   for (const urn of instances) {
-    const seg = urn.split(":"); // [urn, miot-spec-v2, device, <type>, <hash>, <vendor-tail>, <version>]
-    if (seg.length !== 7 || seg[5] !== want) continue;
+    const seg = urn.split(":"); // [urn, miot-spec-v2, device, <type>, <hash>, <vendor-tail>, <version>, ...子设备 service hash]
+    if (seg.length < 7 || seg[5] !== want) continue;
     const version = Number(seg[6]);
     if (Number.isNaN(version)) continue;
-    if (version > bestVersion) {
+    const isFull = seg.length > 7;
+    if (version > bestVersion || (version === bestVersion && isFull && !bestIsFull)) {
       best = urn;
       bestVersion = version;
+      bestIsFull = isFull;
     }
   }
   return best;
@@ -138,6 +144,11 @@ export async function fetchSpec(
 ): Promise<unknown> {
   const instances = await getInstances(httpGet);
   const urn = resolveUrn(model, instances);
-  if (!urn) return undefined; // model 不在 spec 库：按无能力处理，不抛错
+  if (!urn) {
+    // model 不在 spec 库：按无能力处理，不抛错。
+    // 此处打日志让 undefined 路径可观测（不经过 capabilitiesFor 的 catch，否则全程零日志）。
+    console.error("[spec] 未找到型号 %s 的 MIoT spec（该设备暂无精细控制能力）", model);
+    return undefined;
+  }
   return httpGet(`${INSTANCE_URL}?type=${encodeURIComponent(urn)}`);
 }

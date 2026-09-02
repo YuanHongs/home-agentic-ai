@@ -6,6 +6,11 @@
     "urn:miot-spec-v2:device:speaker:0000A015:roome-l09a:5",
     "urn:miot-spec-v2:device:light:0000A00A:philips-bulb:1",
     "urn:miot-spec-v2:device:light:0000A00A:philips-bulb:2",
-    "urn:miot-spec-v2:device:television:0000B004:ropo-tv-x1:1"
+    "urn:miot-spec-v2:device:television:0000B004:ropo-tv-x1:1",
+    "urn:miot-spec-v2:device:light:0000A001:yeelink-meshbulb2:1:0000C802",
+    "urn:miot-spec-v2:device:light:0000A00B:philips-bulb2:2",
+    "urn:miot-spec-v2:device:light:0000A00B:philips-bulb2:2:0000C802",
+    "urn:miot-spec-v2:device:light:0000A00C:philips-bulb3:3",
+    "urn:miot-spec-v2:device:light:0000A00C:philips-bulb3:2:0000C802"
   ]
 }
