@@ -16,6 +16,8 @@ const envSchema = z.object({
   LLM_MODEL: z.string().min(1),
   LLM_TIMEOUT_MS: z.coerce.number().default(30000),
   DEVICE_REFRESH_MS: z.coerce.number().default(30000),
+  // 设备黑名单：命中的设备不进入 LLM 可控清单（防语音控制门锁/音箱自身等高危对象）
+  DEVICE_DENYLIST: z.string().default("xiaomi.wifispeaker"),
 });
 
 const commandPair = (s: string): [number, number] => {
@@ -31,6 +33,7 @@ export interface Config {
   miPassword: string;
   miDid: string;
   ttsCommand: [number, number];
+  /** 预留：唤醒指令（当前未使用，保留解析以兼容） */
   wakeUpCommand: [number, number];
   pollIntervalMs: number;
   triggerWords: string[];
@@ -39,6 +42,8 @@ export interface Config {
   llmModel: string;
   llmTimeoutMs: number;
   deviceRefreshMs: number;
+  /** 设备黑名单（逗号分隔已拆分）：条目包含匹配设备 name 或 model */
+  deviceDenylist: string[];
 }
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
@@ -64,5 +69,6 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     llmModel: e.LLM_MODEL,
     llmTimeoutMs: e.LLM_TIMEOUT_MS,
     deviceRefreshMs: e.DEVICE_REFRESH_MS,
+    deviceDenylist: e.DEVICE_DENYLIST.split(",").map((s) => s.trim()).filter(Boolean),
   };
 }

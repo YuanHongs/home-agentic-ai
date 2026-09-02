@@ -57,11 +57,15 @@ export class ConversationPoller {
     fresh.sort((a, b) => a.ts - b.ts || a.pos - b.pos);
     if (fresh.length > 0) this.pending.push(...fresh.map((f) => f.rec));
 
-    // 游标推进到本批见过的最新位置：本批全部记录都已见过
+    // 游标推进到本批见过的最新位置：本批全部记录都已见过。
+    // 只进不退：已消费记录从拉取窗口短暂消失（云端分片抖动）时 maxTs 会回退，
+    // 此时保留旧游标——否则记录重现时被判为 fresh，已执行过的设备指令会重复执行
     if (records.length > 0) {
       const maxTs = Math.max(...records.map((r) => r.timestamp));
-      const prevCount = cursor.ts === maxTs ? cursor.count : 0;
-      this.cursor = { ts: maxTs, count: Math.max(prevCount, totals.get(maxTs) ?? 0) };
+      if (maxTs >= cursor.ts) {
+        const prevCount = cursor.ts === maxTs ? cursor.count : 0;
+        this.cursor = { ts: maxTs, count: Math.max(prevCount, totals.get(maxTs) ?? 0) };
+      }
     }
     return this.pending.shift();
   }

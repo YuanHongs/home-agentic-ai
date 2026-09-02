@@ -2,7 +2,7 @@ import type { ConversationRecord } from "../types.js";
 import { matchTrigger } from "../agent/trigger.js";
 
 const FALLBACK_REPLY = "我脑子转不动了，稍后再试";
-/** 连续重登失败达到该次数才放弃进程（约 10+ 秒真凭证错误/长期断网；瞬时抖动下轮自愈） */
+/** 连续 poll 失败达到该次数才放弃进程（约 10+ 秒真凭证错误/长期断网/毒数据；瞬时抖动下轮自愈） */
 const MAX_RELOGIN_FAILURES = 10;
 /** TTS 语速启发式：约 4 字/秒，用于估测上一条播报剩余时长 */
 const TTS_MS_PER_CHAR = 250;
@@ -31,7 +31,7 @@ export class SpeakerLoop {
   /** 串行队列：对话与设备控制严格排队，防止并发打架 */
   private queue: Promise<void> = Promise.resolve();
   private pendingCount = 0;
-  /** 连续重登失败计数：poll 成功即归零 */
+  /** 连续 poll 失败计数：poll 成功即归零 */
   private failCount = 0;
   /** 上一条 TTS 的下发时刻与字数（估测播完时长用，见 handle） */
   private lastSpeakAt = 0;
@@ -63,17 +63,20 @@ export class SpeakerLoop {
     } catch (err) {
       this.deps.onError?.(err as Error);
       // token 过期但实例仍在时不带 force 的 ensureAlive 会空转，必须强制重登。
-      // mi-service-lite 把网络抖动和登录失效都表现为失败——一次 WiFi 抖动
-      // 不该杀死常开进程：连续 MAX_RELOGIN_FAILURES 次重登失败（真凭证错误/
-      // 长期断网）才让错误冒泡终止进程，瞬时抖动由下轮 poll 自愈
+      // 失败计数按 poll 失败累积（无论重登成败），只在 poll 成功时归零：
+      // 若 poll 持续失败但登录正常（毒数据/限流），重登成功就归零会形成
+      // 1Hz 无限强制重登风暴（风控风险）且 10 次上限永不触发——连续
+      // MAX_RELOGIN_FAILURES 次失败（约 10+ 秒）后冒泡终止进程交给进程
+      // 管理器，瞬时抖动由下轮 poll 自愈
+      this.failCount++;
       try {
         await this.deps.client.ensureAlive(true);
-        this.failCount = 0;
       } catch (reloginErr) {
-        this.failCount++;
         this.deps.onError?.(reloginErr as Error);
         if (this.failCount >= MAX_RELOGIN_FAILURES) throw reloginErr;
+        return false;
       }
+      if (this.failCount >= MAX_RELOGIN_FAILURES) throw err;
       return false;
     }
     if (!msg) return true;

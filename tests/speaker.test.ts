@@ -99,19 +99,34 @@ describe("SpeakerLoop", () => {
     expect(deps.agent.chat).toHaveBeenCalledTimes(1);
   });
 
-  it("重登连续失败 9 次内不终止（容忍瞬时网络抖动），下轮 poll 自愈", async () => {
+  it("重登连续失败几次内不终止（容忍瞬时网络抖动），重登成功后 poll 自愈", async () => {
     const deps = makeDeps({ messages: [] });
-    deps.poller.poll = vi.fn(async () => {
+    let pollHealed = false;
+    deps.poller.poll = vi.fn(async (): Promise<ConversationRecord | undefined> => {
+      if (pollHealed) return undefined;
       throw new Error("auth expired");
     });
     let fails = 0;
     deps.client.ensureAlive = vi.fn(async () => {
       fails++;
-      if (fails <= 9) throw new Error("relogin failed");
+      if (fails <= 3) throw new Error("relogin failed");
+      pollHealed = true; // 重登成功，网络恢复
     });
     const loop = new SpeakerLoop(deps);
     await expect(loop.runOnce()).resolves.toBeUndefined(); // 不冒泡
-    expect(deps.client.ensureAlive).toHaveBeenCalled(); // 每轮都在重试重登
+    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(4); // 3 次失败 + 1 次成功
+  });
+
+  it("poll 持续失败但重登一直成功时也累积计数，10 次后冒泡（防无限重登风暴）", async () => {
+    const deps = makeDeps({ messages: [] });
+    deps.onError = vi.fn();
+    deps.poller.poll = vi.fn(async () => {
+      throw new Error("poison data"); // 毒数据/限流：poll 持续失败
+    });
+    deps.client.ensureAlive = vi.fn(async () => {}); // 重登永远成功（登录态正常）
+    const loop = new SpeakerLoop(deps);
+    await expect(loop.runOnce()).rejects.toThrow("poison data");
+    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(10);
   });
 
   it("重登连续失败达到 10 次才冒泡终止（真凭证错误/长期断网）", async () => {

@@ -38,6 +38,16 @@ describe("loadConfig", () => {
     );
   });
 
+  it("DEVICE_DENYLIST 默认排除音箱自身（防语音关掉 AI 入口）", () => {
+    const c = loadConfig(validEnv);
+    expect(c.deviceDenylist).toEqual(["xiaomi.wifispeaker"]);
+  });
+
+  it("DEVICE_DENYLIST 逗号分隔解析为列表并去空白", () => {
+    const c = loadConfig({ ...validEnv, DEVICE_DENYLIST: "大门门锁, philips.light.bulb" });
+    expect(c.deviceDenylist).toEqual(["大门门锁", "philips.light.bulb"]);
+  });
+
   it("POLL_INTERVAL_MS 低于 500ms 时抛错并提示最低值", () => {
     expect(() => loadConfig({ ...validEnv, POLL_INTERVAL_MS: "100" })).toThrow(
       /最低 500ms/,

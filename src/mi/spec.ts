@@ -125,12 +125,14 @@ export function resolveUrn(model: string, instances: string[]): string | undefin
   // 版本相同优先 7 段（主体设备 spec）；全为 8 段时取首个（8 段独占照常命中）
   const best = top.find((c) => c.segCount === 7) ?? top[0];
   if (top.length > 1) {
+    // 带上选中 URN 的 device type 段（seg[3]），让"猜的是哪个类型"可判断
     console.error(
-      "[spec] vendor-tail %s 同版本 %s 存在 %d 个候选 URN（多段数/多类型共存，可能为不同设备），按 7 段优先取 %s",
+      "[spec] vendor-tail %s 同版本 %s 存在 %d 个候选 URN（多段数/多类型共存，可能为不同设备），按 7 段优先取 %s（device type: %s）",
       want,
       bestVersion,
       top.length,
       best.urn,
+      best.urn.split(":")[3],
     );
   }
   return best.urn;

@@ -63,14 +63,16 @@ describe("resolveUrn", () => {
       expect(resolveUrn("philips.light.bulb2", urns)).toBe(
         "urn:miot-spec-v2:device:light:0000A00B:philips-bulb2:2",
       );
-      // 同版本多候选（多段数/多类型）是歧义场景：打一行日志让这类设备可观测
+      // 同版本多候选（多段数/多类型）是歧义场景：打一行日志让这类设备可观测，
+      // 并带上选中 URN 的 device type 段（seg[3]），让"猜的是哪个类型"可判断
       expect(errorSpy).toHaveBeenCalledTimes(1);
       expect(errorSpy).toHaveBeenCalledWith(
-        "[spec] vendor-tail %s 同版本 %s 存在 %d 个候选 URN（多段数/多类型共存，可能为不同设备），按 7 段优先取 %s",
+        "[spec] vendor-tail %s 同版本 %s 存在 %d 个候选 URN（多段数/多类型共存，可能为不同设备），按 7 段优先取 %s（device type: %s）",
         "philips-bulb2",
         2,
         2,
         "urn:miot-spec-v2:device:light:0000A00B:philips-bulb2:2",
+        "light",
       );
     } finally {
       errorSpy.mockRestore();

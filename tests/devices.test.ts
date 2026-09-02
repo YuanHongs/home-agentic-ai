@@ -40,6 +40,37 @@ const makeService = (client: MockClient = makeClient()) =>
       model === "philips.light.bulb" ? lightSpec : { services: [] },
   });
 
+/** 门锁 spec：含高危动作 Unlock/FactoryReset 与普通属性 On */
+const lockSpec = {
+  services: [
+    {
+      iid: 4,
+      description: "Lock",
+      properties: [
+        { iid: 1, description: "On", comment: "开关", format: "bool", access: ["read", "write"] },
+      ],
+      actions: [
+        { iid: 1, description: "Unlock" },
+        { iid: 2, description: "FactoryReset" },
+      ],
+    },
+  ],
+};
+
+/** 目录含一把门锁，用于验证高危动作过滤 */
+const makeLockClient = (): MockClient => ({
+  ...makeClient(),
+  listRawDevices: vi.fn(async () => [
+    { did: "did.lock", name: "大门门锁", model: "fake.lock" },
+  ]),
+} as unknown as MockClient);
+
+const makeLockService = (client: MockClient = makeLockClient()) =>
+  new MiDeviceService({
+    client: client as unknown as MiClient,
+    fetchSpecJson: async () => lockSpec,
+  });
+
 /** 目录含两盏同名后缀主灯，用于验证模糊匹配的歧义消解 */
 const makeTwoLightsClient = (): MockClient => ({
   ...makeClient(),
@@ -128,6 +159,61 @@ describe("MiDeviceService", () => {
     expect(r.ok).toBe(false);
     expect(r.message).toContain("客厅主灯");
     expect(r.message).toContain("卧室空调");
+  });
+
+  it("executeAction 拒绝高危动作名（Unlock），不发起云端调用", async () => {
+    const client = makeLockClient();
+    const svc = makeLockService(client);
+    const r = await svc.executeAction("did.lock", "Unlock");
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("高危");
+    expect(r.message).toContain("米家 App");
+    expect(client.specAction).not.toHaveBeenCalled();
+  });
+
+  it("executeAction 拒绝高危动作名（FactoryReset），不发起云端调用", async () => {
+    const client = makeLockClient();
+    const svc = makeLockService(client);
+    const r = await svc.executeAction("did.lock", "FactoryReset");
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("高危");
+    expect(client.specAction).not.toHaveBeenCalled();
+  });
+
+  it("executeAction 普通动作（On）不受高危过滤影响，正常走 specSet", async () => {
+    const client = makeLockClient();
+    const svc = makeLockService(client);
+    const r = await svc.executeAction("did.lock", "On", true);
+    expect(r.ok).toBe(true);
+    expect(client.specSet).toHaveBeenCalledWith("did.lock", 4, 1, true);
+  });
+
+  it("denylist 命中 model 的设备不出现在 listDevices（LLM 看不见）", async () => {
+    const svc = new MiDeviceService({
+      client: makeClient() as unknown as MiClient,
+      denylist: ["philips.light.bulb"],
+      fetchSpecJson: async () => lightSpec,
+    });
+    const devices = await svc.listDevices();
+    expect(devices.find((d) => d.did === "did.light")).toBeUndefined();
+    expect(devices.find((d) => d.did === "did.ac")).toBeDefined(); // 未命中不过滤
+  });
+
+  it("denylist 命中 name 子串的设备同样被过滤", async () => {
+    const svc = new MiDeviceService({
+      client: makeClient() as unknown as MiClient,
+      denylist: ["主灯"],
+      fetchSpecJson: async () => lightSpec,
+    });
+    const devices = await svc.listDevices();
+    expect(devices.find((d) => d.did === "did.light")).toBeUndefined();
+    expect(devices).toHaveLength(1);
+  });
+
+  it("不配置 denylist 时不过滤（向后兼容）", async () => {
+    const svc = makeService();
+    const devices = await svc.listDevices();
+    expect(devices).toHaveLength(2);
   });
 
   it("getDeviceState 返回能力名->值映射", async () => {

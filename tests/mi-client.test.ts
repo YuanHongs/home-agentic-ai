@@ -101,6 +101,20 @@ describe("MiClient", () => {
     expect(getMiNA).toHaveBeenCalledTimes(2);
   });
 
+  it("answers 缺失的记录（技能调用等非对话形状）被过滤且不抛错", async () => {
+    const c = new MiClient(config);
+    await c.init();
+    (c as any).miNA.getConversations.mockResolvedValueOnce({
+      records: [
+        { query: "今天天气", time: 300 }, // 无 answers 字段：毒记录
+        { query: "请开灯", time: 200, answers: [{ type: "TTS" }] },
+      ],
+    });
+    await expect(c.getLatestRecords(10)).resolves.toEqual([
+      { text: "请开灯", timestamp: 200 },
+    ]);
+  });
+
   it("getConversations 返回 undefined 时抛错（不吞掉登录态失效，激活自愈路径）", async () => {
     const c = new MiClient(config);
     await c.init();

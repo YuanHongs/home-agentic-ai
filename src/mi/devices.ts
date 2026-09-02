@@ -14,6 +14,12 @@ export interface DeviceServiceOptions {
   fetchSpecJson?: (model: string) => Promise<unknown>;
   /** 设备目录缓存时长（毫秒）；缺省为永久缓存 */
   refreshMs?: number;
+  /**
+   * 设备黑名单：命中的设备不进入目录/prompt（LLM 看不见、不可控）。
+   * 条目对设备 name 或 model 做包含匹配。默认排除音箱自身（防"关掉小爱"
+   * 瘫痪 AI 入口），来自 config.deviceDenylist。
+   */
+  denylist?: string[];
 }
 
 /**
@@ -36,6 +42,13 @@ const defaultFetchSpecJson = async (model: string): Promise<unknown> =>
     if (!res.ok) throw new Error(`spec 拉取失败 ${res.status}: ${model}`);
     return res.json();
   });
+
+/**
+ * 高危动作名模式：解锁/重启/恢复出厂/删除类操作一旦被 prompt 注入或误触发，
+ * 后果不可逆（门锁被语音打开、设备被重置）。语音链路不鉴权，这类动作
+ * 一律拒绝且不发起云端调用，引导用户走米家 App（有账号鉴权 + 二次确认）。
+ */
+const DANGEROUS_ACTION_RE = /unlock|reboot|reset|factory|delete|remove/i;
 
 /** 智能体层的设备门面：目录解析 + 控制执行，实现 IRemoteDevice */
 export class MiDeviceService implements IRemoteDevice {
@@ -69,12 +82,19 @@ export class MiDeviceService implements IRemoteDevice {
     }
   }
 
+  /** 黑名单命中：条目包含匹配设备名或型号（如 "xiaomi.wifispeaker" 命中音箱 model） */
+  private isDenied(d: { name: string; model: string }): boolean {
+    return (this.opts.denylist ?? []).some(
+      (entry) => entry !== "" && (d.name.includes(entry) || d.model.includes(entry)),
+    );
+  }
+
   async listDevices(): Promise<DeviceInfo[]> {
     const fresh =
       this.cache !== undefined &&
       (this.opts.refreshMs === undefined || Date.now() - (this.cachedAt ?? 0) < this.opts.refreshMs);
     if (fresh) return this.cache!;
-    const raw = await this.opts.client.listRawDevices();
+    const raw = (await this.opts.client.listRawDevices()).filter((d) => !this.isDenied(d));
     const devices = await Promise.all(
       raw.map(async (d): Promise<DeviceInfo> => {
         const capabilities = await this.capabilitiesFor(d.model);
@@ -152,6 +172,10 @@ export class MiDeviceService implements IRemoteDevice {
     if (!cap) {
       const list = device.capabilities.map((c) => `${c.name}(${c.desc})`).join("、") || "无";
       return { ok: false, message: `设备 ${device.name} 没有能力 ${capability}。可用能力：${list}` };
+    }
+    // 高危动作名（Unlock/FactoryReset/...）本地直接拒绝，不发起云端调用
+    if (DANGEROUS_ACTION_RE.test(cap.name)) {
+      return { ok: false, message: `「${cap.desc}」属于高危操作，已拒绝。请通过米家 App 操作。` };
     }
     try {
       const ok =

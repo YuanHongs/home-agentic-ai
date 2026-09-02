@@ -80,6 +80,17 @@ export class Agent {
     } catch {
       return { ok: false, message: `工具参数不是合法 JSON: ${tc.arguments}` };
     }
+    // 设备目录/控制抛错（如登录态失效拉不到列表）不能穿到 chat() 的外层
+    // catch——那会把整轮对话坍缩为兜底话术。转 tool 消息回喂 LLM 自纠
+    // （保留具体消息供 LLM 判断重试还是告知用户）
+    try {
+      return await this.dispatchTool(tc, args);
+    } catch (err) {
+      return { ok: false, message: `设备目录访问失败: ${(err as Error).message}` };
+    }
+  }
+
+  private async dispatchTool(tc: ToolCall, args: Record<string, unknown>): Promise<ToolResult> {
     const d = this.opts.devices;
     switch (tc.name) {
       case "list_devices": {

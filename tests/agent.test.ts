@@ -92,6 +92,23 @@ describe("Agent.chat", () => {
     expect(llm.received[1].some((m) => m.role === "tool" && m.content.includes("参数"))).toBe(true);
   });
 
+  it("listDevices 抛错时错误转 tool 消息回喂 LLM 自纠（对话不坍缩为兜底话术）", async () => {
+    const llm = new FakeLLM([
+      { content: "", toolCalls: [toolCall("t1", "list_devices", {})] },
+      { content: "设备目录暂时访问不了，稍后再试", toolCalls: [] },
+    ]);
+    const remote = makeRemote();
+    remote.listDevices = vi.fn(async () => {
+      throw new Error("拉取设备列表失败");
+    });
+    const agent = new Agent({ llm, devices: remote, systemPrompt });
+    const reply = await agent.chat("看看设备");
+    expect(reply).toBe("设备目录暂时访问不了，稍后再试"); // 不是"我脑子转不动了"
+    const toolMsg = llm.received[1].find((m) => m.role === "tool")!;
+    expect(toolMsg.content).toContain("设备目录访问失败");
+    expect(toolMsg.content).toContain("拉取设备列表失败"); // 保留具体消息供 LLM 判断
+  });
+
   it("超过 5 轮工具调用时终止并返回兜底话术", async () => {
     const loopReply: LLMReply = { content: "", toolCalls: [toolCall("t", "list_devices", {})] };
     const llm = new FakeLLM([loopReply, loopReply, loopReply, loopReply, loopReply, loopReply, loopReply]);

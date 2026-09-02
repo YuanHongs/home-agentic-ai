@@ -72,6 +72,34 @@ describe("ConversationPoller", () => {
     expect(await p.poll()).toBeUndefined();
   });
 
+  it("已消费记录从拉取窗口短暂消失后重现时不重放（游标只进不退）", async () => {
+    let records: ConversationRecord[] = [rec("B", 170), rec("A", 100)];
+    const fetcher = vi.fn(async () => [...records]);
+    const p = new ConversationPoller(fetcher);
+    await p.poll(); // 游标 = {ts:170, count:1}
+    records = [rec("C", 200), rec("B", 170), rec("A", 100)];
+    expect(await p.poll()).toEqual(rec("C", 200)); // C 正常吐出
+    // C 从拉取窗口短暂消失（云端分片抖动）：maxTs 回退到 170
+    records = [rec("B", 170), rec("A", 100)];
+    expect(await p.poll()).toBeUndefined();
+    // C 重现：不得被判为 fresh 而重复执行已执行过的设备指令
+    records = [rec("C", 200), rec("B", 170), rec("A", 100)];
+    expect(await p.poll()).toBeUndefined();
+  });
+
+  it("同秒拉取窗口收缩时 count 不回退（保留同秒已消费条数）", async () => {
+    let records: ConversationRecord[] = [rec("二", 200), rec("一", 200), rec("旧", 100)];
+    const fetcher = vi.fn(async () => [...records]);
+    const p = new ConversationPoller(fetcher);
+    await p.poll(); // 游标 = {ts:200, count:2}
+    // 窗口里同秒只剩一条（"二" 消失）：count 不得缩回 1
+    records = [rec("一", 200), rec("旧", 100)];
+    expect(await p.poll()).toBeUndefined();
+    // "二" 重现：不重放
+    records = [rec("二", 200), rec("一", 200), rec("旧", 100)];
+    expect(await p.poll()).toBeUndefined();
+  });
+
   it("fetcher 抛错时 poll 透传异常（由上层重试策略处理）", async () => {
     const fetcher = vi.fn(async () => {
       throw new Error("network down");

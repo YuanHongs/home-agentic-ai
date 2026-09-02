@@ -37,7 +37,11 @@ async function main() {
   await initWithRetry(client);
   console.log("[app] 小米云登录成功");
 
-  const devices = new MiDeviceService({ client, refreshMs: config.deviceRefreshMs });
+  const devices = new MiDeviceService({
+    client,
+    refreshMs: config.deviceRefreshMs,
+    denylist: config.deviceDenylist,
+  });
   const cache = new DeviceCache({
     remote: devices,
     refreshMs: config.deviceRefreshMs,

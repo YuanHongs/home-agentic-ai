@@ -69,7 +69,11 @@ export class MiClient {
     return records
       .filter(
         (e) =>
-          ["TTS", "LLM"].includes(e.answers[0]?.type) && e.answers.length === 1,
+          // answers 本身可能缺失（技能调用等非对话形状）：毒记录会让 filter 抛
+          // TypeError 且停留在最近 10 条窗口内持续抛错——前置 Array.isArray 过滤掉
+          Array.isArray(e.answers) &&
+          e.answers.length === 1 &&
+          ["TTS", "LLM"].includes(e.answers[0]?.type),
       )
       .map((e) => ({ text: e.query, timestamp: e.time }));
   }
