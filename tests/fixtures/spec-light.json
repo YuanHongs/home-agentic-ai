@@ -1,0 +1,25 @@
+{
+  "services": [
+    {
+      "iid": 1,
+      "description": "Device Information",
+      "comment": "设备信息",
+      "properties": []
+    },
+    {
+      "iid": 2,
+      "description": "Bulb",
+      "comment": "灯泡",
+      "properties": [
+        { "iid": 1, "description": "Switch Status", "comment": "开关", "format": "bool", "access": ["read", "write"] },
+        { "iid": 2, "description": "Brightness", "comment": "亮度", "format": "uint8", "access": ["read", "write"], "value-range": [1, 100, 1] },
+        { "iid": 3, "description": "Color Temperature", "format": "uint32", "access": ["read", "write"] },
+        { "iid": 4, "description": "Uptime", "comment": "运行时长", "format": "uint64", "access": ["read"] }
+      ],
+      "actions": [
+        { "iid": 1, "description": "Toggle", "in": [] },
+        { "iid": 2, "description": "Blink", "in": [{ "piid": 1 }] }
+      ]
+    }
+  ]
+}
