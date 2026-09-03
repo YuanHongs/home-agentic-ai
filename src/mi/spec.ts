@@ -121,7 +121,7 @@ export function _resetInstancesCacheForTest(): void {
 /**
  * 纯函数：按 model 解析对应的 spec URN。
  * 映射规律（实测）：model 按 "." 切分，首段=vendor、末段=型号尾；
- * URN 第6段恰为 `vendor-型号尾`（中间的 type 词不对应，不能用作匹配条件）；
+ * URN 第6段恰为 `vendor-型号尾`（中间的 type 词不对应，不能用作硬性匹配条件）；
  * 第7段为版本号，多个 URN 命中时取版本号最大者；版本相同时取 7 段形式。
  * 8 段 URN（实测占 28%）是 BLE-mesh 网关下挂的第三方子设备变体，尾部多一段
  * 子设备 service hash（如 `...:yeelink-meshbulb2:1:0000C802`），其中
@@ -133,23 +133,59 @@ export function _resetInstancesCacheForTest(): void {
  * 的 7 段；8 段独占的 vendor-tail（无 7 段竞争）不受影响，照常命中。
  * 同版本存在多候选（多段数/多类型）是歧义场景：打一行 console.error 让这类
  * 设备可观测。
+ *
+ * 中段词消歧（CR4 正确性波）：同一 vendor-tail 可能挂着多个不同设备类型的
+ * URN（viomi.vacuum.v8 实测有 9 个类型），纯 max-version 会选中错误类型
+ * （版本更大的 hood 抢走 vacuum）。model 中段是设备类别的描述词，优先在
+ * URN type 段（seg[3]）与中段匹配的候选里按现有规则选择；无中段匹配时
+ * 回退原有行为。匹配语义分两档（见函数内注释）。
  */
 export function resolveUrn(model: string, instances: string[]): string | undefined {
   const parts = model.split(".");
   if (parts.length < 2) return undefined;
   const [vendor, tail] = [parts[0], parts[parts.length - 1]];
+  // 中段词（viomi.vacuum.v8 的 "vacuum"、chuangmi.plug.v3 的 "plug"）；
+  // 空段（"a..b"）无信息量且会让包含匹配误判全命中，过滤掉
+  const middles = parts.slice(1, -1).filter((s) => s.length > 0);
   const want = `${vendor}-${tail}`;
-  const candidates: { urn: string; version: number; segCount: number }[] = [];
+  const candidates: { urn: string; type: string; version: number; segCount: number }[] = [];
   for (const urn of instances) {
     const seg = urn.split(":"); // [urn, miot-spec-v2, device, <type>, <hash>, <vendor-tail>, <version>, ...子设备 service hash]
     if (seg.length < 7 || seg[5] !== want) continue;
     const version = Number(seg[6]);
     if (Number.isNaN(version)) continue;
-    candidates.push({ urn, version, segCount: seg.length });
+    candidates.push({ urn, type: seg[3], version, segCount: seg.length });
   }
   if (candidates.length === 0) return undefined;
-  const bestVersion = Math.max(...candidates.map((c) => c.version));
-  const top = candidates.filter((c) => c.version === bestVersion);
+
+  // 中段消歧：匹配分两档，命中任一档后在缩窄后的候选池内按现有规则选择。
+  //  1) 精确相等（vacuum == vacuum）：最可信，命中即不再看第 2 档；
+  //  2) 双向包含（中段 "wifispeaker" ⊃ type "speaker"）："相等"对复合词太严
+  //     （xiaomi.wifispeaker.l09a 的中段与 type speaker），且包含方向不可预知，
+  //     故取双向。分档是为了让弱包含（如中段 "light" 包含于 type "nightlight"）
+  //     永远抢不走本可精确命中的候选。
+  // 无任何中段匹配时回退原有行为（全候选按版本/段数选）。
+  let pool = candidates;
+  if (middles.length > 0) {
+    const exact = candidates.filter((c) => middles.includes(c.type));
+    const loose =
+      exact.length > 0
+        ? exact
+        : candidates.filter((c) => middles.some((m) => c.type.includes(m) || m.includes(c.type)));
+    if (loose.length > 0 && loose.length < candidates.length) {
+      pool = loose;
+      console.error(
+        "[spec] model %s 中段 %s 命中 device type，%d 个同尾缀候选消歧为 %d 个",
+        model,
+        middles.join("."),
+        candidates.length,
+        pool.length,
+      );
+    }
+  }
+
+  const bestVersion = Math.max(...pool.map((c) => c.version));
+  const top = pool.filter((c) => c.version === bestVersion);
   // 版本相同优先 7 段（主体设备 spec）；全为 8 段时取首个（8 段独占照常命中）
   const best = top.find((c) => c.segCount === 7) ?? top[0];
   if (top.length > 1) {

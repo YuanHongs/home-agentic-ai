@@ -18,8 +18,9 @@ const instancesJson = JSON.parse(
 const urns: string[] = instancesJson.instances;
 
 describe("resolveUrn", () => {
-  it("model 首段 vendor + 末段尾缀映射 URN 第5段（type 词不参与匹配）", () => {
-    // model 中段 wifispeaker 与 URN 的 type=speaker 不对应，匹配只看 xiaomi-l09a
+  it("model 首段 vendor + 末段尾缀映射 URN 第5段（无中段可匹配时 type 词不参与匹配）", () => {
+    // 中段 wifispeaker 经双向包含命中 type=speaker（见消歧用例），但即便不匹配，
+    // vendor-tail 匹配也独立成立——中段只是候选间的偏好条件，不是硬性门槛
     expect(resolveUrn("xiaomi.wifispeaker.l09a", urns)).toBe(
       "urn:miot-spec-v2:device:speaker:0000A015:xiaomi-l09a:2",
     );
@@ -80,17 +81,101 @@ describe("resolveUrn", () => {
     }
   });
 
-  it("同版本仅 8 段多类型 tie：照常命中 8 段并打歧义日志", () => {
+  it("同版本仅 8 段多类型 tie 且中段无匹配：照常命中 8 段并打歧义日志", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const list = [
         "urn:miot-spec-v2:device:light:0000A001:fake-mesh:1:0000C802",
         "urn:miot-spec-v2:device:switch:0000A001:fake-mesh:1:0000C803",
       ];
-      expect(resolveUrn("fake.light.mesh", list)).toBe(
+      // 中段 "unknown" 不命中任何候选 type → 回退现有行为（版本最大→7 段优先→首个）
+      expect(resolveUrn("fake.unknown.mesh", list)).toBe(
         "urn:miot-spec-v2:device:light:0000A001:fake-mesh:1:0000C802",
       );
       expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("同版本多类型 tie 但中段命中：消歧选中匹配类型、无歧义日志", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const list = [
+        "urn:miot-spec-v2:device:light:0000A001:fake-mesh:1:0000C802",
+        "urn:miot-spec-v2:device:switch:0000A001:fake-mesh:1:0000C803",
+      ];
+      // 中段 "light" 精确命中 light 候选：不再依赖"7 段优先/首个"的盲选
+      expect(resolveUrn("fake.light.mesh", list)).toBe(
+        "urn:miot-spec-v2:device:light:0000A001:fake-mesh:1:0000C802",
+      );
+      // 消歧生效（2 个候选缩窄为 1 个）应可观测；消歧后唯一候选，
+      // 不再打"同版本多候选"的歧义日志
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("消歧"),
+        "fake.light.mesh",
+        "light",
+        2,
+        1,
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("中段词消歧：viomi.vacuum.v8 有 9 个不同类型 URN，中段 vacuum 命中 vacuum 而非 max-version 的 hood", () => {
+    // CR4 正确性波：真实场景（miot-spec.org 实测）viomi.vacuum.v8 挂着 9 个
+    // 不同设备类型的 URN（vendor-tail 为 viomi-v8），hood v2 是全局最大版本
+    // ——纯 max-version 会选中错误类型的 hood spec；model 中段 "vacuum" 与
+    // URN type 段精确匹配，应在 vacuum 候选内再按现有规则选择
+    const viomiUrns = [
+      "urn:miot-spec-v2:device:vacuum:0000A006:viomi-v8:1",
+      "urn:miot-spec-v2:device:hood:0000A01B:viomi-v8:1",
+      "urn:miot-spec-v2:device:hood:0000A01B:viomi-v8:2", // 全局最大版本，错误类型
+      "urn:miot-spec-v2:device:bath-heater:0000A028:viomi-v8:1",
+      "urn:miot-spec-v2:device:integrated-stove:0000A056:viomi-v8:1",
+      "urn:miot-spec-v2:device:fan:0000A005:viomi-v8:1",
+      "urn:miot-spec-v2:device:heater:0000A01A:viomi-v8:1",
+      "urn:miot-spec-v2:device:washer:0000A01F:viomi-v8:1",
+      "urn:miot-spec-v2:device:air-conditioner:0000A004:viomi-v8:1",
+    ];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(resolveUrn("viomi.vacuum.v8", viomiUrns)).toBe(
+        "urn:miot-spec-v2:device:vacuum:0000A006:viomi-v8:1",
+      );
+      // 消歧生效（9 个候选缩窄为 1 个）应可观测
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("消歧"),
+        "viomi.vacuum.v8",
+        "vacuum",
+        9,
+        1,
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("中段无匹配时回退现有行为：全候选按版本最大选择", () => {
+    // 中段 "foo" 不命中任何候选 type（light），回退到 vendor-tail + max-version
+    expect(resolveUrn("philips.foo.bulb", urns)).toBe(
+      "urn:miot-spec-v2:device:light:0000A00A:philips-bulb:2",
+    );
+  });
+
+  it("中段与 type 双向包含可命中：wifispeaker ⊃ speaker，解析结果不受消歧影响", () => {
+    // xiaomi.wifispeaker.l09a 的中段 "wifispeaker" 包含 type "speaker"——
+    // "相等"语义会漏掉这种复合词；双向包含命中后候选集不变（本就只有 speaker），
+    // 结果与不消歧一致
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(resolveUrn("xiaomi.wifispeaker.l09a", urns)).toBe(
+        "urn:miot-spec-v2:device:speaker:0000A015:xiaomi-l09a:2",
+      );
+      // 候选集未被缩窄（两个候选都是 speaker）：不打消歧日志
+      expect(errorSpy).not.toHaveBeenCalled();
     } finally {
       errorSpy.mockRestore();
     }

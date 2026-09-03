@@ -163,6 +163,35 @@ describe("SpeakerLoop", () => {
     expect(deps.agent.chat).toHaveBeenCalledTimes(1); // 自愈后正常处理消息
   });
 
+  it("失败计数按'连续'而非累计：3败1成再7败（累计 10、最大连续 7）不终止且继续处理消息", async () => {
+    // 变异测试盲区修复：旧断言只查 chat 调用次数，从未验证计数器本身——
+    // 删掉 poll 成功处的 failCount=0 后旧测试仍全绿。本用例构造
+    // "3 败 → 1 成 → 7 败"：累计失败 10 次，但最大连续仅 7 次（< 10）。
+    // 有归零：进程存活，自愈后正常处理消息；无归零：第 10 次累计失败
+    // （第二段第 7 败）时 step 冒泡终止进程。
+    const deps = makeDeps({ messages: [{ text: "请开灯", timestamp: 100 }] });
+    const script: Array<"fail" | "ok"> = [
+      "fail", "fail", "fail", // 第一段：3 次瞬时失败
+      "ok", // 1 次成功：失败计数应归零
+      "fail", "fail", "fail", "fail", "fail", "fail", "fail", // 第二段：7 败（累计第 10 次失败）
+      "ok", // 网络恢复，处理积压消息
+    ];
+    let i = 0;
+    const originalPoll = deps.poller.poll;
+    deps.poller.poll = vi.fn(async (): Promise<ConversationRecord | undefined> => {
+      const step = script[i];
+      if (i < script.length) i++;
+      if (step === "fail") throw new Error("auth expired");
+      return originalPoll();
+    });
+    deps.client.ensureAlive = vi.fn(async () => {}); // 重登永远成功（瞬时抖动）
+    const loop = new SpeakerLoop(deps);
+    await expect(loop.runOnce()).resolves.toBeUndefined(); // 不冒泡（最大连续 7 < 10）
+    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(10); // 3 + 7 次失败各触发一次重登
+    expect(deps.agent.chat).toHaveBeenCalledTimes(1); // 自愈后仍正常处理消息
+    expect(deps.agent.chat).toHaveBeenCalledWith("开灯");
+  });
+
   it("handle 开头打印 🔥 触发日志（成功路径可观测）", async () => {
     const deps = makeDeps({ messages: [{ text: "请开灯", timestamp: 100 }] });
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
