@@ -48,6 +48,23 @@ describe("loadConfig", () => {
     expect(c.deviceDenylist).toEqual(["大门门锁", "philips.light.bulb"]);
   });
 
+  it("DEVICE_TYPE_ALLOWLIST 默认为安全可控设备类型集合", () => {
+    const c = loadConfig(validEnv);
+    expect(c.deviceTypeAllowlist).toContain("light");
+    expect(c.deviceTypeAllowlist).toContain("air-conditioner");
+    expect(c.deviceTypeAllowlist).toContain("bath-heater");
+    expect(c.deviceTypeAllowlist).toContain("fresh-air-system");
+    // 高危类型默认不放行
+    expect(c.deviceTypeAllowlist).not.toContain("lock");
+    expect(c.deviceTypeAllowlist).not.toContain("camera");
+    expect(c.deviceTypeAllowlist).not.toContain("gateway");
+  });
+
+  it("DEVICE_TYPE_ALLOWLIST 自定义逗号分隔解析为列表并去空白（小写归一）", () => {
+    const c = loadConfig({ ...validEnv, DEVICE_TYPE_ALLOWLIST: "Light, lock ,," });
+    expect(c.deviceTypeAllowlist).toEqual(["light", "lock"]);
+  });
+
   it("POLL_INTERVAL_MS 低于 500ms 时抛错并提示最低值", () => {
     expect(() => loadConfig({ ...validEnv, POLL_INTERVAL_MS: "100" })).toThrow(
       /最低 500ms/,

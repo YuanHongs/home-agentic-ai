@@ -15,6 +15,10 @@ export interface DeviceCapability {
   format?: string;
   /** property 的访问权限 */
   access?: string[];
+  /** property 的数值范围（来自 spec 的 value-range [min,max,step]，step 丢弃） */
+  constraint?: { min?: number; max?: number };
+  /** property 的枚举取值列表（来自 spec 的 value-list，取每项的 value 字段） */
+  values?: unknown[];
 }
 
 export interface DeviceInfo {
@@ -24,6 +28,8 @@ export interface DeviceInfo {
   /** 设备型号，如 "philips.light.bulb" */
   model: string;
   room?: string;
+  /** MIoT spec URN 第 4 段的设备类型（如 light / lock）；无 spec 时缺省 */
+  deviceType?: string;
   capabilities: DeviceCapability[];
 }
 

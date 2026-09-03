@@ -26,6 +26,10 @@ interface SpecProperty {
   comment?: string;
   format?: string;
   access?: string[];
+  /** [min, max, step] */
+  "value-range"?: unknown;
+  /** [{ value, description }, ...] */
+  "value-list"?: unknown;
 }
 interface SpecAction {
   iid: number;
@@ -41,7 +45,23 @@ interface SpecService {
 
 /** desc 取值顺序：中文 comment 优先，其次 ZH 映射表，最后英文 description 原文 */
 const descOf = (item: { description: string; comment?: string }): string =>
-  item.comment ?? ZH[item.description] ?? item.description;
+  item.comment?.trim() ? item.comment : (ZH[item.description] ?? item.description);
+
+/** value-range [min,max,step] → constraint（取前两段；非法形状不产出约束） */
+const parseConstraint = (range: unknown): { min?: number; max?: number } | undefined => {
+  if (!Array.isArray(range) || range.length < 2) return undefined;
+  const [min, max] = range;
+  if (typeof min !== "number" || typeof max !== "number") return undefined;
+  return { min, max };
+};
+
+/** value-list [{value,description},...] → values（取每项的 value 字段；非法形状不产出） */
+const parseValues = (list: unknown): unknown[] | undefined => {
+  if (!Array.isArray(list)) return undefined;
+  return list.map((e) =>
+    typeof e === "object" && e !== null && "value" in e ? (e as { value: unknown }).value : e,
+  );
+};
 
 export function parseSpec(model: string, specJson: unknown): DeviceCapability[] {
   const services: SpecService[] = (specJson as { services?: SpecService[] })?.services ?? [];
@@ -51,6 +71,11 @@ export function parseSpec(model: string, specJson: unknown): DeviceCapability[] 
     for (const prop of svc.properties ?? []) {
       const writable = prop.access?.includes("write");
       if (!writable) continue;
+      // 空名防御（CR4-S2）：真实 spec 大量存在只有 comment、description 为空的字段，
+      // 它们会成为 name:"" 的能力——executeAction 里 String(undefined ?? "") 意外命中
+      if (typeof prop.description !== "string" || !prop.description.trim()) continue;
+      const constraint = parseConstraint(prop["value-range"]);
+      const values = parseValues(prop["value-list"]);
       caps.push({
         kind: "property",
         siid: svc.iid,
@@ -59,9 +84,12 @@ export function parseSpec(model: string, specJson: unknown): DeviceCapability[] 
         desc: descOf(prop),
         format: prop.format,
         access: prop.access,
+        ...(constraint ? { constraint } : {}),
+        ...(values ? { values } : {}),
       });
     }
     for (const act of svc.actions ?? []) {
+      if (typeof act.description !== "string" || !act.description.trim()) continue; // 空名防御（CR4-S2）
       caps.push({
         kind: "action",
         siid: svc.iid,
@@ -158,6 +186,25 @@ export async function fetchSpec(
   model: string,
   httpGet: (url: string) => Promise<unknown>,
 ): Promise<unknown> {
+  return (await fetchSpecWithType(model, httpGet))?.json;
+}
+
+/** spec 拉取结果：json + URN 第 4 段的 device type（设备类型白名单的判定依据） */
+export interface SpecWithType {
+  json: unknown;
+  /** URN `urn:miot-spec-v2:device:<type>:...` 的第 4 段，如 light / lock / speaker */
+  deviceType: string;
+}
+
+/**
+ * 拉取 spec 并附带 device type（CR4-S1）。
+ * 设备只有解析出 spec 才有能力可控，而 URN 里就带 device type——
+ * 在能力入口按类型放行是气密的结构性防线（白名单见 config.DEVICE_TYPE_ALLOWLIST）。
+ */
+export async function fetchSpecWithType(
+  model: string,
+  httpGet: (url: string) => Promise<unknown>,
+): Promise<SpecWithType | undefined> {
   const instances = await getInstances(httpGet);
   const urn = resolveUrn(model, instances);
   if (!urn) {
@@ -166,5 +213,7 @@ export async function fetchSpec(
     console.error("[spec] 未找到型号 %s 的 MIoT spec（该设备暂无精细控制能力）", model);
     return undefined;
   }
-  return httpGet(`${INSTANCE_URL}?type=${encodeURIComponent(urn)}`);
+  const json = await httpGet(`${INSTANCE_URL}?type=${encodeURIComponent(urn)}`);
+  // resolveUrn 保证 URN ≥7 段，第 4 段（下标 3）恒为 device type
+  return { json, deviceType: urn.split(":")[3] };
 }

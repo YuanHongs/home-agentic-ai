@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import { MiDeviceService } from "../src/mi/devices.js";
 import type { MiClient } from "../src/mi/client.js";
+import type { SpecWithType } from "../src/mi/spec.js";
+
+/** spec 注入统一形状：{json, deviceType} */
+const specOf = (json: unknown, deviceType: string): SpecWithType => ({ json, deviceType });
 
 interface MockClient {
   listRawDevices: Mock;
@@ -37,7 +41,9 @@ const makeService = (client: MockClient = makeClient()) =>
   new MiDeviceService({
     client: client as unknown as MiClient,
     fetchSpecJson: async (model) =>
-      model === "philips.light.bulb" ? lightSpec : { services: [] },
+      model === "philips.light.bulb"
+        ? specOf(lightSpec, "light")
+        : specOf({ services: [] }, "air-conditioner"),
   });
 
 /** 门锁 spec：含高危动作 Unlock/FactoryReset 与普通属性 On */
@@ -68,7 +74,73 @@ const makeLockClient = (): MockClient => ({
 const makeLockService = (client: MockClient = makeLockClient()) =>
   new MiDeviceService({
     client: client as unknown as MiClient,
-    fetchSpecJson: async () => lockSpec,
+    fetchSpecJson: async () => specOf(lockSpec, "lock"),
+  });
+
+/**
+ * 白名单类型（light）但 spec 混入危险动作名：验证正则第二道防线
+ * （S6——主防线是类型白名单，此设备模拟"白名单设备的 spec 里混入危险动作"）
+ */
+const dangerSpec = {
+  services: [
+    {
+      iid: 2,
+      description: "Bulb",
+      properties: [
+        { iid: 1, description: "On", comment: "开关", format: "bool", access: ["read", "write"] },
+      ],
+      actions: [
+        { iid: 1, description: "Format" },
+        { iid: 2, description: "Add Lock User" },
+        { iid: 3, description: "Silence" },
+        { iid: 4, description: "Send Data" },
+        { iid: 5, description: "Unlock" },
+        { iid: 6, description: "FactoryReset" },
+      ],
+    },
+  ],
+};
+
+const makeDangerClient = (): MockClient => ({
+  ...makeClient(),
+  listRawDevices: vi.fn(async () => [
+    { did: "did.danger", name: "客厅灯", model: "fake.light.danger" },
+  ]),
+} as unknown as MockClient);
+
+const makeDangerService = (client: MockClient = makeDangerClient()) =>
+  new MiDeviceService({
+    client: client as unknown as MiClient,
+    fetchSpecJson: async () => specOf(dangerSpec, "light"),
+  });
+
+/** 多格式能力 spec：bool / uint8+range / string / action，用于值校验测试（S3） */
+const typedSpec = {
+  services: [
+    {
+      iid: 2,
+      description: "Bulb",
+      properties: [
+        { iid: 1, description: "Switch Status", comment: "开关", format: "bool", access: ["write"] },
+        { iid: 2, description: "Brightness", comment: "亮度", format: "uint8", access: ["write"], "value-range": [1, 100, 1] },
+        { iid: 3, description: "Name", comment: "名称", format: "string", access: ["write"] },
+      ],
+      actions: [{ iid: 1, description: "Blink" }],
+    },
+  ],
+};
+
+const makeTypedClient = (): MockClient => ({
+  ...makeClient(),
+  listRawDevices: vi.fn(async () => [
+    { did: "did.typed", name: "客厅灯", model: "fake.light.typed" },
+  ]),
+} as unknown as MockClient);
+
+const makeTypedService = (client: MockClient = makeTypedClient()) =>
+  new MiDeviceService({
+    client: client as unknown as MiClient,
+    fetchSpecJson: async () => specOf(typedSpec, "light"),
   });
 
 /** 目录含两盏同名后缀主灯，用于验证模糊匹配的歧义消解 */
@@ -90,12 +162,13 @@ const makeTwoAcClient = (): MockClient => ({
 } as unknown as MockClient);
 
 describe("MiDeviceService", () => {
-  it("listDevices 合并设备列表与 spec 能力", async () => {
+  it("listDevices 合并设备列表与 spec 能力（含 deviceType）", async () => {
     const svc = makeService();
     const devices = await svc.listDevices();
     expect(devices).toHaveLength(2);
     const light = devices.find((d) => d.did === "did.light")!;
     expect(light.name).toBe("客厅主灯");
+    expect(light.deviceType).toBe("light");
     expect(light.capabilities).toHaveLength(1);
     expect(light.capabilities[0]).toMatchObject({ name: "Switch Status", desc: "开关", piid: 1 });
   });
@@ -161,38 +234,186 @@ describe("MiDeviceService", () => {
     expect(r.message).toContain("卧室空调");
   });
 
-  it("executeAction 拒绝高危动作名（Unlock），不发起云端调用", async () => {
-    const client = makeLockClient();
-    const svc = makeLockService(client);
-    const r = await svc.executeAction("did.lock", "Unlock");
-    expect(r.ok).toBe(false);
-    expect(r.message).toContain("高危");
-    expect(r.message).toContain("米家 App");
+  it("executeAction 拒绝高危动作名（Unlock/FactoryReset），不发起云端调用", async () => {
+    const client = makeDangerClient();
+    const svc = makeDangerService(client);
+    for (const cap of ["Unlock", "FactoryReset"]) {
+      const r = await svc.executeAction("did.danger", cap);
+      expect(r.ok).toBe(false);
+      expect(r.message).toContain("高危");
+      expect(r.message).toContain("米家 App");
+    }
     expect(client.specAction).not.toHaveBeenCalled();
   });
 
-  it("executeAction 拒绝高危动作名（FactoryReset），不发起云端调用", async () => {
-    const client = makeLockClient();
-    const svc = makeLockService(client);
-    const r = await svc.executeAction("did.lock", "FactoryReset");
-    expect(r.ok).toBe(false);
-    expect(r.message).toContain("高危");
-    expect(client.specAction).not.toHaveBeenCalled();
+  it("executeAction 拒绝真实 spec 击穿正则的高危动作（Format/Add Lock User/Silence/Send Data）", async () => {
+    const client = makeDangerClient();
+    const svc = makeDangerService(client);
+    for (const cap of ["Format", "Add Lock User", "Silence", "Send Data"]) {
+      const r = await svc.executeAction("did.danger", cap);
+      expect(r.ok, cap).toBe(false);
+      expect(r.message, cap).toContain("高危");
+    }
+    expect(client.specAction).not.toHaveBeenCalled(); // 全部本地拒绝，零云端调用
   });
 
   it("executeAction 普通动作（On）不受高危过滤影响，正常走 specSet", async () => {
+    const client = makeDangerClient();
+    const svc = makeDangerService(client);
+    const r = await svc.executeAction("did.danger", "On", true);
+    expect(r.ok).toBe(true);
+    expect(client.specSet).toHaveBeenCalledWith("did.danger", 2, 1, true);
+  });
+
+  it("S1 设备类型白名单：lock 类型设备 capabilities 置空（设备仍在列表，LLM 看到的是无可控能力）", async () => {
+    const svc = makeLockService();
+    const devices = await svc.listDevices();
+    const lock = devices.find((d) => d.did === "did.lock")!;
+    expect(lock).toBeDefined(); // 设备仍可见名称
+    expect(lock.deviceType).toBe("lock");
+    expect(lock.capabilities).toHaveLength(0);
+    // 无能力后控制被拒，供 LLM 自纠
+    const r = await svc.executeAction("did.lock", "On", true);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("没有能力");
+  });
+
+  it("S1 白名单类型（light）能力正常放行", async () => {
+    const svc = makeService();
+    const light = (await svc.listDevices()).find((d) => d.did === "did.light")!;
+    expect(light.capabilities.length).toBeGreaterThan(0);
+  });
+
+  it("S1 自定义 typeAllowlist 生效：['lock'] 时门锁能力可用", async () => {
     const client = makeLockClient();
-    const svc = makeLockService(client);
+    const svc = new MiDeviceService({
+      client: client as unknown as MiClient,
+      fetchSpecJson: async () => specOf(lockSpec, "lock"),
+      typeAllowlist: ["lock"],
+    });
+    const lock = (await svc.listDevices()).find((d) => d.did === "did.lock")!;
+    expect(lock.capabilities.length).toBeGreaterThan(0);
     const r = await svc.executeAction("did.lock", "On", true);
     expect(r.ok).toBe(true);
     expect(client.specSet).toHaveBeenCalledWith("did.lock", 4, 1, true);
+  });
+
+  it("S1 typeAllowlist 大小写不敏感（'Light' 放行 light 类型）", async () => {
+    const svc = new MiDeviceService({
+      client: makeClient() as unknown as MiClient,
+      fetchSpecJson: async (model) =>
+        model === "philips.light.bulb" ? specOf(lightSpec, "light") : specOf({ services: [] }, "air-conditioner"),
+      typeAllowlist: ["Light"],
+    });
+    const light = (await svc.listDevices()).find((d) => d.did === "did.light")!;
+    expect(light.capabilities.length).toBeGreaterThan(0);
+  });
+
+  it("S1 无 spec（undefined）设备照旧无能力", async () => {
+    const svc = new MiDeviceService({
+      client: makeClient() as unknown as MiClient,
+      fetchSpecJson: async () => undefined,
+    });
+    const devices = await svc.listDevices();
+    expect(devices).toHaveLength(2);
+    expect(devices.every((d) => d.capabilities.length === 0)).toBe(true);
+    expect(devices.every((d) => d.deviceType === undefined)).toBe(true);
+  });
+
+  it("S3 bool 能力传对象被拒，不发起云端调用", async () => {
+    const client = makeTypedClient();
+    const svc = makeTypedService(client);
+    const r = await svc.executeAction("did.typed", "Switch Status", { on: true });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("不符合");
+    expect(r.message).toContain("开关");
+    expect(r.message).toContain("bool");
+    expect(client.specSet).not.toHaveBeenCalled();
+  });
+
+  it("S3 uint8 能力超出 value-range 被拒并提示范围", async () => {
+    const client = makeTypedClient();
+    const svc = makeTypedService(client);
+    const r = await svc.executeAction("did.typed", "Brightness", 9999);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("不符合");
+    expect(r.message).toContain("uint8");
+    expect(r.message).toContain("1");
+    expect(r.message).toContain("100");
+    expect(client.specSet).not.toHaveBeenCalled();
+  });
+
+  it("S3 string 能力传 number 被拒", async () => {
+    const client = makeTypedClient();
+    const svc = makeTypedService(client);
+    const r = await svc.executeAction("did.typed", "Name", 123);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("不符合");
+    expect(r.message).toContain("string");
+    expect(client.specSet).not.toHaveBeenCalled();
+  });
+
+  it("S3 合法值正常执行：bool/范围内 uint8/string 各走一次云端", async () => {
+    const client = makeTypedClient();
+    const svc = makeTypedService(client);
+    expect((await svc.executeAction("did.typed", "Switch Status", true)).ok).toBe(true);
+    expect((await svc.executeAction("did.typed", "Brightness", 50)).ok).toBe(true);
+    expect((await svc.executeAction("did.typed", "Name", "卧室灯")).ok).toBe(true);
+    expect(client.specSet).toHaveBeenCalledTimes(3);
+  });
+
+  it("S3 property 能力缺 value 参数被拒（要求必传，供 LLM 自纠）", async () => {
+    const client = makeTypedClient();
+    const svc = makeTypedService(client);
+    const r = await svc.executeAction("did.typed", "Brightness");
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("value");
+    expect(client.specSet).not.toHaveBeenCalled();
+  });
+
+  it("S3 action 能力缺 value 放行（无参动作传空数组）", async () => {
+    const client = makeTypedClient();
+    const svc = makeTypedService(client);
+    const r = await svc.executeAction("did.typed", "Blink");
+    expect(r.ok).toBe(true);
+    expect(client.specAction).toHaveBeenCalledWith("did.typed", 2, 1, []);
+  });
+
+  it("S3 action 能力 in 数组含对象元素被拒（只允许基础类型）", async () => {
+    const client = makeTypedClient();
+    const svc = makeTypedService(client);
+    const r = await svc.executeAction("did.typed", "Blink", [{ piid: 1 }]);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("不符合");
+    expect(client.specAction).not.toHaveBeenCalled();
+  });
+
+  it("S3 action 能力 in 数组为基础类型时正常执行", async () => {
+    const client = makeTypedClient();
+    const svc = makeTypedService(client);
+    const r = await svc.executeAction("did.typed", "Blink", [1, "快"]);
+    expect(r.ok).toBe(true);
+    expect(client.specAction).toHaveBeenCalledWith("did.typed", 2, 1, [1, "快"]);
+  });
+
+  it("S5 denylist 大小写不敏感：'Lock' 命中 model 'lumi.lock.acn001'", async () => {
+    const client = makeClient();
+    client.listRawDevices = vi.fn(async () => [
+      { did: "did.l1", name: "大门锁", model: "lumi.lock.acn001" },
+    ]) as unknown as MockClient["listRawDevices"];
+    const svc = new MiDeviceService({
+      client: client as unknown as MiClient,
+      denylist: ["Lock"],
+      fetchSpecJson: async () => specOf(lockSpec, "lock"),
+    });
+    expect(await svc.listDevices()).toHaveLength(0);
   });
 
   it("denylist 命中 model 的设备不出现在 listDevices（LLM 看不见）", async () => {
     const svc = new MiDeviceService({
       client: makeClient() as unknown as MiClient,
       denylist: ["philips.light.bulb"],
-      fetchSpecJson: async () => lightSpec,
+      fetchSpecJson: async () => specOf(lightSpec, "light"),
     });
     const devices = await svc.listDevices();
     expect(devices.find((d) => d.did === "did.light")).toBeUndefined();
@@ -203,7 +424,7 @@ describe("MiDeviceService", () => {
     const svc = new MiDeviceService({
       client: makeClient() as unknown as MiClient,
       denylist: ["主灯"],
-      fetchSpecJson: async () => lightSpec,
+      fetchSpecJson: async () => specOf(lightSpec, "light"),
     });
     const devices = await svc.listDevices();
     expect(devices.find((d) => d.did === "did.light")).toBeUndefined();
@@ -243,7 +464,7 @@ describe("MiDeviceService", () => {
       const svc = new MiDeviceService({
         client: client as unknown as MiClient,
         refreshMs: 30_000,
-        fetchSpecJson: async () => ({ services: [] }),
+        fetchSpecJson: async () => specOf({ services: [] }, "light"),
       });
       await svc.listDevices();
       expect(client.listRawDevices).toHaveBeenCalledTimes(1);
@@ -264,7 +485,7 @@ describe("MiDeviceService", () => {
     vi.useFakeTimers();
     try {
       const client = makeClient();
-      const fetchSpecJson = vi.fn(async () => ({ services: [] }));
+      const fetchSpecJson = vi.fn(async () => specOf({ services: [] }, "light"));
       const svc = new MiDeviceService({
         client: client as unknown as MiClient,
         refreshMs: 30_000,
@@ -286,7 +507,7 @@ describe("MiDeviceService", () => {
     vi.useFakeTimers();
     try {
       const client = makeClient();
-      const fetchSpecJson = vi.fn(async () => ({ services: [] }));
+      const fetchSpecJson = vi.fn(async () => specOf({ services: [] }, "light"));
       const svc = new MiDeviceService({
         client: client as unknown as MiClient,
         refreshMs: 30_000,
@@ -326,7 +547,9 @@ describe("MiDeviceService", () => {
           failOnce = false;
           throw new Error("transient network error");
         }
-        return model === "philips.light.bulb" ? lightSpec : { services: [] };
+        return model === "philips.light.bulb"
+          ? specOf(lightSpec, "light")
+          : specOf({ services: [] }, "air-conditioner");
       });
       const svc = new MiDeviceService({
         client: client as unknown as MiClient,
@@ -351,7 +574,7 @@ describe("MiDeviceService", () => {
       client: client as unknown as MiClient,
       fetchSpecJson: async (model) => {
         if (model === "philips.light.bulb") throw new Error("spec timeout");
-        return { services: [] };
+        return specOf({ services: [] }, "air-conditioner");
       },
     });
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});

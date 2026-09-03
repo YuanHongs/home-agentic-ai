@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   _resetInstancesCacheForTest,
   fetchSpec,
+  fetchSpecWithType,
   parseSpec,
   resolveUrn,
 } from "../src/mi/spec.js";
@@ -175,6 +176,42 @@ describe("fetchSpec", () => {
   });
 });
 
+describe("fetchSpecWithType", () => {
+  beforeEach(() => {
+    _resetInstancesCacheForTest();
+  });
+
+  it("返回 spec json 与 URN 第 4 段的 device type（speaker）", async () => {
+    const httpGet = async (url: string): Promise<unknown> =>
+      url.endsWith("/instances") ? instancesJson : specJson;
+    const r = await fetchSpecWithType("xiaomi.wifispeaker.l09a", httpGet);
+    expect(r).toEqual({ json: specJson, deviceType: "speaker" });
+  });
+
+  it("light 型号解析出 deviceType=light", async () => {
+    const httpGet = async (url: string): Promise<unknown> =>
+      url.endsWith("/instances") ? instancesJson : specJson;
+    const r = await fetchSpecWithType("philips.light.bulb", httpGet);
+    expect(r?.deviceType).toBe("light");
+  });
+
+  it("URN 解析不到时返回 undefined（与 fetchSpec 一致，不抛错）", async () => {
+    const httpGet = async (url: string): Promise<unknown> => instancesJson;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await fetchSpecWithType("xiaomi.wifispeaker.unknown", httpGet)).toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("fetchSpec 保持向后兼容：返回 fetchSpecWithType 的 json 部分", async () => {
+    const httpGet = async (url: string): Promise<unknown> =>
+      url.endsWith("/instances") ? instancesJson : specJson;
+    expect(await fetchSpec("philips.light.bulb", httpGet)).toEqual(specJson);
+  });
+});
+
 describe("parseSpec", () => {
   it("提取可写属性与动作，只读属性排除", () => {
     const caps = parseSpec("philips.light.bulb", specJson);
@@ -209,5 +246,84 @@ describe("parseSpec", () => {
     const caps = parseSpec("philips.light.bulb", specJson);
     const toggle = caps.find((c) => c.name === "Toggle")!;
     expect(toggle).toMatchObject({ kind: "action", siid: 2, aiid: 1, desc: "Toggle" });
+  });
+
+  it("description 为空的 property/action 直接跳过（真实 spec 存在大量只有 comment 的字段，不能产出空名能力）", () => {
+    const caps = parseSpec("fake.light.empty", {
+      services: [
+        {
+          iid: 2,
+          description: "Bulb",
+          properties: [
+            { iid: 1, description: "", comment: "空名属性", format: "bool", access: ["write"] },
+            { iid: 2, description: "On", format: "bool", access: ["write"] },
+          ],
+          actions: [{ iid: 1, description: "" }, { iid: 2, description: "Toggle" }],
+        },
+      ],
+    });
+    expect(caps.map((c) => c.name)).toEqual(["On", "Toggle"]);
+    expect(caps.some((c) => c.name === "")).toBe(false);
+  });
+
+  it("value-range [min,max,step] 解析为 constraint（取前两段，step 丢弃）", () => {
+    const caps = parseSpec("fake.light.range", {
+      services: [
+        {
+          iid: 2,
+          description: "Bulb",
+          properties: [
+            { iid: 1, description: "Brightness", format: "uint8", access: ["write"], "value-range": [1, 100, 1] },
+          ],
+        },
+      ],
+    });
+    expect(caps[0].constraint).toEqual({ min: 1, max: 100 });
+  });
+
+  it("value-range 非法形状（非数组/长度不足/非数值）不产出 constraint", () => {
+    const caps = parseSpec("fake.light.badrange", {
+      services: [
+        {
+          iid: 2,
+          description: "Bulb",
+          properties: [
+            { iid: 1, description: "A", format: "uint8", access: ["write"], "value-range": "1-100" },
+            { iid: 2, description: "B", format: "uint8", access: ["write"], "value-range": [1] },
+            { iid: 3, description: "C", format: "uint8", access: ["write"], "value-range": ["a", "b"] },
+          ],
+        },
+      ],
+    });
+    expect(caps.every((c) => c.constraint === undefined)).toBe(true);
+  });
+
+  it("value-list 解析为 values（取每项的 value 字段）", () => {
+    const caps = parseSpec("fake.light.list", {
+      services: [
+        {
+          iid: 2,
+          description: "Bulb",
+          properties: [
+            {
+              iid: 1,
+              description: "Mode",
+              format: "uint8",
+              access: ["write"],
+              "value-list": [
+                { value: 1, description: "低" },
+                { value: 2, description: "高" },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(caps[0].values).toEqual([1, 2]);
+  });
+
+  it("fixture 的 Brightness 解析出 value-range 约束（真实 spec 形状回归）", () => {
+    const caps = parseSpec("philips.light.bulb", specJson);
+    expect(caps.find((c) => c.name === "Brightness")?.constraint).toEqual({ min: 1, max: 100 });
   });
 });

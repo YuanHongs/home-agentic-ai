@@ -4,6 +4,8 @@ import { buildToolDefs } from "./tools.js";
 
 const MAX_TOOL_ROUNDS = 5;
 const HISTORY_LIMIT = 8;
+/** 单轮 toolCalls 上限（CR4-S4）：LLM 一次吐出大量调用时只执行前 N 个，防 DoS/误批量操作 */
+const MAX_TOOL_CALLS_PER_ROUND = 10;
 const FALLBACK_REPLY = "我脑子转不动了，稍后再试";
 
 interface ToolResult {
@@ -47,9 +49,27 @@ export class Agent {
           content: reply.content,
           tool_calls: reply.toolCalls,
         });
-        for (const tc of reply.toolCalls) {
+        // S4 单轮上限：只执行前 MAX_TOOL_CALLS_PER_ROUND 个，其余本地截断。
+        // tool_call_id 配对协议要求每个 tc 都有对应 tool 消息——被截断的
+        // 用截断说明填充，否则下一轮 LLM 请求会被端点 400 拒掉
+        const total = reply.toolCalls.length;
+        if (total > MAX_TOOL_CALLS_PER_ROUND) {
+          console.error(
+            `[agent] 单轮工具调用 %d 个超过上限 %d，已截断`,
+            total,
+            MAX_TOOL_CALLS_PER_ROUND,
+          );
+        }
+        for (const tc of reply.toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND)) {
           const result = await this.runTool(tc);
           messages.push({ role: "tool", tool_call_id: tc.id, content: result.message });
+        }
+        for (const tc of reply.toolCalls.slice(MAX_TOOL_CALLS_PER_ROUND)) {
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: "单轮工具调用超过上限，已截断（该调用未执行）",
+          });
         }
         reply = await this.opts.llm.chat(messages, this.tools);
       }
@@ -107,9 +127,15 @@ export class Agent {
       }
       case "control_device": {
         const name = String(args.device ?? "");
+        // S2 空 action 显式拒绝：String(undefined ?? "")="" 会意外命中空名能力
+        // （parseSpec 已跳过空名能力，这里再拦一层参数层的缺失）
+        const action = typeof args.action === "string" ? args.action.trim() : "";
+        if (!action) {
+          return { ok: false, message: "缺少 action 参数（能力名），请在可用能力列表中选择" };
+        }
         const device = await d.resolveDevice(name);
         if (!device) return { ok: false, message: `未找到设备「${name}」，可用设备：${(await d.listDevices()).map((x) => x.name).join("、")}` };
-        return d.executeAction(device.did, String(args.action ?? ""), args.value);
+        return d.executeAction(device.did, action, args.value);
       }
       default:
         return { ok: false, message: `未知工具: ${tc.name}` };

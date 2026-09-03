@@ -1,5 +1,17 @@
 import { z } from "zod";
 
+/**
+ * 设备类型白名单默认值（CR4-S1）：只有这里的类型（MIoT spec URN 第 4 段）
+ * 才向 LLM 开放控制能力。只收录"错了也就是开关/温度不对"的设备类型；
+ * 门锁/摄像头/网关/报警器等高危类型一律不放行——设备仍进列表可见名称，
+ * 但 LLM 看到的是"无可控能力"。
+ */
+const DEFAULT_DEVICE_TYPE_ALLOWLIST =
+  "light,outlet,switch,air-conditioner,air-purifier,heater,humidifier,fan,curtain,airer,vacuum,television,fresh-air-system,bath-heater";
+
+/** 默认白名单（数组形式，供 MiDeviceService 直接使用） */
+export const DEFAULT_DEVICE_TYPE_ALLOWLIST_LIST = DEFAULT_DEVICE_TYPE_ALLOWLIST.split(",");
+
 const envSchema = z.object({
   MI_USER_ID: z.string().min(1),
   MI_PASSWORD: z.string().min(1),
@@ -18,6 +30,8 @@ const envSchema = z.object({
   DEVICE_REFRESH_MS: z.coerce.number().default(30000),
   // 设备黑名单：命中的设备不进入 LLM 可控清单（防语音控制门锁/音箱自身等高危对象）
   DEVICE_DENYLIST: z.string().default("xiaomi.wifispeaker"),
+  // 设备类型白名单：MIoT spec URN 第 4 段的类型不在名单内时，该设备能力置空（主防线）
+  DEVICE_TYPE_ALLOWLIST: z.string().default(DEFAULT_DEVICE_TYPE_ALLOWLIST),
 });
 
 const commandPair = (s: string): [number, number] => {
@@ -42,8 +56,10 @@ export interface Config {
   llmModel: string;
   llmTimeoutMs: number;
   deviceRefreshMs: number;
-  /** 设备黑名单（逗号分隔已拆分）：条目包含匹配设备 name 或 model */
+  /** 设备黑名单（逗号分隔已拆分）：条目包含匹配设备 name 或 model（大小写不敏感） */
   deviceDenylist: string[];
+  /** 设备类型白名单（逗号分隔已拆分、小写归一）：类型外的设备能力置空 */
+  deviceTypeAllowlist: string[];
 }
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
@@ -70,5 +86,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     llmTimeoutMs: e.LLM_TIMEOUT_MS,
     deviceRefreshMs: e.DEVICE_REFRESH_MS,
     deviceDenylist: e.DEVICE_DENYLIST.split(",").map((s) => s.trim()).filter(Boolean),
+    deviceTypeAllowlist: e.DEVICE_TYPE_ALLOWLIST.split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
   };
 }

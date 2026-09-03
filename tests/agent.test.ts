@@ -148,6 +148,75 @@ describe("Agent.chat", () => {
     }
   });
 
+  it("S2 control_device 缺 action 参数时返回明确拒绝（不误命中空名能力）", async () => {
+    const llm = new FakeLLM([
+      { content: "", toolCalls: [toolCall("t1", "control_device", { device: "客厅主灯", value: true })] },
+      { content: "好的", toolCalls: [] },
+    ]);
+    const remote = makeRemote();
+    const agent = new Agent({ llm, devices: remote, systemPrompt });
+    await agent.chat("开灯");
+    // 缺 action 不应意外命中 String(undefined ?? "") 的空名能力
+    expect(remote.executeAction).not.toHaveBeenCalled();
+    const toolMsg = llm.received[1].find((m) => m.role === "tool")!;
+    expect(toolMsg.content).toContain("缺少 action 参数");
+    expect(toolMsg.content).toContain("可用能力");
+  });
+
+  it("S2 control_device action 为空串时同样返回明确拒绝", async () => {
+    const llm = new FakeLLM([
+      { content: "", toolCalls: [toolCall("t1", "control_device", { device: "客厅主灯", action: "", value: true })] },
+      { content: "好的", toolCalls: [] },
+    ]);
+    const remote = makeRemote();
+    const agent = new Agent({ llm, devices: remote, systemPrompt });
+    await agent.chat("开灯");
+    expect(remote.executeAction).not.toHaveBeenCalled();
+    const toolMsg = llm.received[1].find((m) => m.role === "tool")!;
+    expect(toolMsg.content).toContain("缺少 action 参数");
+  });
+
+  it("S4 单轮 toolCalls 超过 10 个只执行前 10 个，且每个 tc 都有配对的 tool 消息", async () => {
+    const calls = Array.from({ length: 50 }, (_, i) => toolCall(`t${i}`, "list_devices", {}));
+    const llm = new FakeLLM([
+      { content: "", toolCalls: calls },
+      { content: "好了", toolCalls: [] },
+    ]);
+    const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const remote = makeRemote();
+      const agent = new Agent({ llm, devices: remote, systemPrompt });
+      await agent.chat("看设备");
+      // 只执行前 10 个
+      expect(remote.listDevices).toHaveBeenCalledTimes(10);
+      // 协议要求：50 个 tool_call 每个都有对应 tool 消息（被截断的用说明填充）
+      const toolMsgs = llm.received[1].filter((m) => m.role === "tool");
+      expect(toolMsgs).toHaveLength(50);
+      const byId = new Map(toolMsgs.map((m) => [m.tool_call_id!, m]));
+      expect(byId.size).toBe(50); // tool_call_id 一一配对，无遗漏无重复
+      const truncated = toolMsgs.filter((m) => m.content.includes("超过上限"));
+      expect(truncated).toHaveLength(40);
+      expect(truncated.every((m) => Number(m.tool_call_id!.slice(1)) >= 10)).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("S4 单轮 toolCalls 恰好 10 个时不截断", async () => {
+    const calls = Array.from({ length: 10 }, (_, i) => toolCall(`t${i}`, "list_devices", {}));
+    const llm = new FakeLLM([
+      { content: "", toolCalls: calls },
+      { content: "好了", toolCalls: [] },
+    ]);
+    const remote = makeRemote();
+    const agent = new Agent({ llm, devices: remote, systemPrompt });
+    await agent.chat("看设备");
+    expect(remote.listDevices).toHaveBeenCalledTimes(10);
+    const toolMsgs = llm.received[1].filter((m) => m.role === "tool");
+    expect(toolMsgs).toHaveLength(10);
+    expect(toolMsgs.some((m) => m.content.includes("超过上限"))).toBe(false);
+  });
+
   it("历史切片后首条历史消息保证是 user（部分国产端点要求首条非 system 为 user）", async () => {
     const llm = new FakeLLM([]);
     const agent = new Agent({ llm, devices: makeRemote(), systemPrompt });

@@ -41,6 +41,7 @@ async function main() {
     client,
     refreshMs: config.deviceRefreshMs,
     denylist: config.deviceDenylist,
+    typeAllowlist: config.deviceTypeAllowlist,
   });
   const cache = new DeviceCache({
     remote: devices,

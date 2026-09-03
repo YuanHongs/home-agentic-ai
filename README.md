@@ -97,7 +97,8 @@ LLM 能看到你家全部米家设备及其"能力"（开关/亮度/色温/目�
 | `LLM_MODEL` | ✅ | — | 模型名 |
 | `LLM_TIMEOUT_MS` | | `30000` | LLM 超时 |
 | `DEVICE_REFRESH_MS` | | `30000` | 设备列表刷新间隔 |
-| `DEVICE_DENYLIST` | | `xiaomi.wifispeaker` | 设备黑名单（逗号分隔，按设备名或型号包含匹配）；命中的设备不进入 LLM 可控清单。默认排除音箱自身，防止"把小爱关掉"瘫痪 AI 入口 |
+| `DEVICE_DENYLIST` | | `xiaomi.wifispeaker` | 设备黑名单（逗号分隔，按设备名或型号包含匹配，大小写不敏感）；命中的设备不进入 LLM 可控清单。默认排除音箱自身，防止"把小爱关掉"瘫痪 AI 入口 |
+| `DEVICE_TYPE_ALLOWLIST` | | `light,outlet,switch,air-conditioner,air-purifier,heater,humidifier,fan,curtain,airer,vacuum,television,fresh-air-system,bath-heater` | 设备类型白名单（**安全主防线**）。设备类型取自 MIoT spec URN 第 4 段（如 `light`/`lock`/`camera`），不在名单内的类型其设备能力置空——设备仍在清单里（可见名称），但 LLM 看到的是"无可控能力"。默认只收录"操作错了也就是开关/温度不对"的类型；门锁/摄像头/网关/报警器等高危类型一律不放行 |
 
 ## 6. 看日志排障
 
@@ -110,6 +111,7 @@ LLM 能看到你家全部米家设备及其"能力"（开关/亮度/色温/目�
 | `[speaker] 拉取对话失败（可能登录态失效）` | 小米云异常，服务会自动重登 |
 | `[MiClient] TTS 播报指令下发失败` | 播报没发出去（听不到回答先查这个） |
 | `[spec] 未找到型号 xxx 的 MIoT spec` | 某设备查不到能力描述，该设备暂不可精细控制 |
+| `[MiDeviceService] 设备类型 xxx 不在白名单` | 该设备类型（如门锁/摄像头）被 `DEVICE_TYPE_ALLOWLIST` 挡住，能力已置空——设计行为，如需放行改配置 |
 | `[cache] 刷新失败（保留旧快照）` | 设备列表刷新失败，沿用上次结果 |
 
 ## 7. 故障排查（FAQ）
@@ -127,7 +129,7 @@ LLM 能看到你家全部米家设备及其"能力"（开关/亮度/色温/目�
 → 按顺序查：① 日志有没有 `🔥`（没有 = 没轮询到/触发词没命中——说的话要以"请"或"小智"开头）② 有 `🔥` 但没回复（LLM 超时/Key 无效，看 `[Agent] LLM 调用失败`）③ 有回复但听不到（`TTS 播报指令下发失败`）。
 
 **Q：某台设备控制不了 / 说"没有能力 X"**
-→ 该设备型号在 miot-spec.org 查不到 spec（看 `[spec] 未找到型号` 日志），或为蓝牙网关设备不支持云端控制（在米家 App 里试试能否远程控制）。新添的设备最多等 `DEVICE_REFRESH_MS`（默认 30 秒）后生效。
+→ 三种可能：① 该设备型号在 miot-spec.org 查不到 spec（看 `[spec] 未找到型号` 日志）；② 该设备的类型不在 `DEVICE_TYPE_ALLOWLIST` 白名单内（看 `设备类型 xxx 不在白名单` 日志）——门锁/摄像头/网关等高危类型默认就是不放行的，这是设计行为；③ 蓝牙网关设备不支持云端控制（在米家 App 里试试能否远程控制）。新添的设备最多等 `DEVICE_REFRESH_MS`（默认 30 秒）后生效。
 
 **Q：回答很慢**
 → 轮询 1 秒 + LLM 推理时间。换响应更快的模型、或检查网络。
@@ -141,7 +143,7 @@ LLM 能看到你家全部米家设备及其"能力"（开关/亮度/色温/目�
 ## 8. 测试与开发
 
 ```bash
-npm test            # 92 个单元测试（全部 mock，不联网）
+npm test            # 134 个单元测试（全部 mock，不联网）
 npm run typecheck   # TS 类型检查
 ```
 
@@ -149,8 +151,10 @@ npm run typecheck   # TS 类型检查
 
 ## 9. 安全与注意事项
 
-- 🔒 **高危操作防护**：动作名匹配 `unlock`/`reboot`/`reset`/`factory`/`delete`/`remove` 的能力（如门锁开锁、恢复出厂）会被直接拒绝，不发起云端调用——请通过米家 App 操作（有账号鉴权 + 二次确认）。
-- 🔒 **设备黑名单**：`DEVICE_DENYLIST` 命中的设备（按名称或型号包含匹配）不会出现在 LLM 的设备清单里，LLM 看不见也控不了。默认排除音箱自身。门锁、摄像头、网关等建议一并加入。
+- 🔒 **设备类型白名单（主防线）**：`DEVICE_TYPE_ALLOWLIST` 之外的设备类型（门锁/摄像头/网关/报警器等）能力一律置空——设备在清单里只剩名称，LLM 看到的是"无可控能力"。语音链路不鉴权，"能力入口按类型放行"是气密的结构性防线。
+- 🔒 **高危动作名正则（第二道防线）**：即便白名单设备的 spec 里混入危险动作，名字匹配 `unlock`/`reboot`/`reset`/`factory`/`delete`/`remove`/`format`/`erase`/`clear`/`init`/`arming`/`disarm`/`add.*user`/`sync.*user`/`silence`/`send.*data`/`pop up` 的能力也会被本地直接拒绝，不发起云端调用——请通过米家 App 操作（有账号鉴权 + 二次确认）。
+- 🔒 **值类型与范围校验**：`control_device` 的 value 按能力声明的格式（bool/数值范围/字符串/枚举）本地校验，不匹配直接拒绝并回喂 LLM 自纠，不发起云端调用；单轮工具调用上限 10 个，超出部分本地截断。
+- 🔒 **设备黑名单**：`DEVICE_DENYLIST` 命中的设备（按名称或型号包含匹配，大小写不敏感）不会出现在 LLM 的设备清单里，LLM 看不见也控不了。默认排除音箱自身。
 - ⚠️ **`.mi.json`**：登录成功后项目根目录会生成此文件（mi-service-lite 写入，**含明文密码 + serviceToken**）。已被 `.gitignore` 忽略——勿手动提交、勿拷贝给他人。
 - ⚠️ **`.env`** 含账号密码与 API Key，同样勿提交（已忽略）。
 - 依赖小米云非官方接口：登录态可能数周失效一次，服务会自动重登；协议变更时需更新代码（全部隔离在 `src/mi/client.ts`）。
