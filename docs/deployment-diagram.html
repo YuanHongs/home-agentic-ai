@@ -60,7 +60,7 @@
   <rect x="60" y="262" width="150" height="88" rx="5" fill="currentColor" fill-opacity="0.07"/>
   <text x="135" y="284" font-size="12" font-weight="600" text-anchor="middle">接入层</text>
   <text x="135" y="302" font-size="10" text-anchor="middle" fill="#666">轮询 · 云协议 · 串行队列</text>
-  <text x="135" y="318" font-size="10" text-anchor="middle" fill="#666">五道安全闸门</text>
+  <text x="135" y="318" font-size="10" text-anchor="middle" fill="#666">四道安全闸门</text>
   <rect x="230" y="262" width="150" height="88" rx="5" fill="currentColor" fill-opacity="0.07"/>
   <text x="305" y="284" font-size="12" font-weight="600" text-anchor="middle">智能体层</text>
   <text x="305" y="302" font-size="10" text-anchor="middle" fill="#666">触发词 · 工具循环</text>
@@ -128,7 +128,7 @@
 
 <!-- ═══════════ 图二：一次指令的时序 ═══════════ -->
 <figure>
-<svg viewBox="0 0 940 300" role="img" aria-label="一次语音指令的时序：说话、ASR 上云、服务每秒轮询取回、触发词命中、LLM 推理出工具调用、五道闸门本地校验、指令经小米云下发设备、结果回喂 LLM、TTS 播报。共九步。">
+<svg viewBox="0 0 940 300" role="img" aria-label="一次语音指令的时序：说话、ASR 上云、服务每秒轮询取回、触发词命中、LLM 推理出工具调用、四道闸门本地校验、指令经小米云下发设备、结果回喂 LLM、TTS 播报。共九步。">
   <defs>
     <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
@@ -159,7 +159,7 @@
     <text x="592" y="96" fill="#666">返回工具调用</text>
 
     <rect x="768" y="40" width="156" height="72" rx="6" fill="none" stroke="currentColor" stroke-width="1.6"/>
-    <text x="780" y="62" font-weight="700">5 · 五道闸门</text>
+    <text x="780" y="62" font-weight="700">5 · 四道闸门</text>
     <text x="780" y="80" fill="#666">类型白名单/黑名单/</text>
     <text x="780" y="96" fill="#666">危险正则/值校验</text>
 
@@ -202,7 +202,7 @@
   </g>
 </svg>
 <figcaption>
-<b>"请打开客厅灯"的九步回路。</b>第 3 步（红框）是延迟来源；第 5 步（加粗框）是安全闸门——LLM 的任何输出都在本地过完五道闸门才允许发往云端，被拦截的操作会变成"请通过米家 App 操作"的语音提示而不是静默失败。
+<b>"请打开客厅灯"的九步回路。</b>第 3 步（红框）是延迟来源；第 5 步（加粗框）是安全闸门——设备清单在进 LLM 前已过黑名单与类型白名单（LLM 根本看不到被拒设备），LLM 的每个控制输出再过危险正则与值校验两道本地闸门：危险操作被直接拒绝并提示走米家 App，参数错误则回喂 LLM 自纠。
 </figcaption>
 </figure>
 
