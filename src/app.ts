@@ -1,5 +1,5 @@
 import { loadConfig } from "./config.js";
-import { MiClient } from "./mi/client.js";
+import { MiClient, MiRiskControlError } from "./mi/client.js";
 import { MiDeviceService } from "./mi/devices.js";
 import { ConversationPoller } from "./mi/poller.js";
 import { SpeakerLoop } from "./mi/speaker.js";
@@ -17,6 +17,13 @@ async function initWithRetry(client: MiClient): Promise<void> {
       await client.init();
       return;
     } catch (err) {
+      // 小米账号风控：重试会以新随机 deviceId 反复登录加重风控——立即放弃，
+      // exit code 2 区别于其他启动失败（配合 README 排障）
+      if (err instanceof MiRiskControlError) {
+        console.error(`[app] ${err.message}`);
+        if (err.authUrl) console.error(`[app] 授权链接: ${err.authUrl}`);
+        process.exit(2);
+      }
       if (attempt > INIT_RETRY_DELAYS_MS.length) throw err; // 全部失败：真凭证错误
       const waitMs = INIT_RETRY_DELAYS_MS[attempt - 1];
       console.error(

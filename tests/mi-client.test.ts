@@ -34,7 +34,10 @@ vi.mock("mi-service-lite", () => {
 });
 
 import { getMiNA, getMiIOT } from "mi-service-lite";
-import { MiClient } from "../src/mi/client.js";
+import { MiClient, MiRiskControlError } from "../src/mi/client.js";
+
+const RISK_LINE = "🔥 触发小米账号异地登录安全验证机制，请在浏览器打开以下链接，并按照网页提示授权验证账号：";
+const AUTH_URL = "https://account.xiaomi.com/identity/auth?sid=xiaomiio";
 
 const config = {
   miUserId: "u",
@@ -173,6 +176,79 @@ describe("MiClient", () => {
       expect(errSpy).toHaveBeenCalledWith("[MiClient] pause 指令下发失败");
     } finally {
       errSpy.mockRestore();
+    }
+  });
+
+  it("init 期间库打印风控文案并返回 undefined 时抛 MiRiskControlError（附授权链接）", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      // 复现 mi-service-lite getAccount 风控分支：打印文案+链接后返回 undefined
+      vi.mocked(getMiNA).mockImplementationOnce(async () => {
+        console.log(RISK_LINE);
+        console.log("👉 " + AUTH_URL);
+        return undefined;
+      });
+      const c = new MiClient(config);
+      const err = await c.init().then(
+        () => null,
+        (e) => e,
+      );
+      expect(err).toBeInstanceOf(MiRiskControlError);
+      expect((err as MiRiskControlError).name).toBe("MiRiskControlError");
+      expect((err as MiRiskControlError).authUrl).toBe(AUTH_URL);
+      expect((err as MiRiskControlError).message).toContain("已触发小米账号安全验证");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("风控劫持后 console.log 被正确恢复且输出仍透传原函数", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      vi.mocked(getMiNA).mockImplementationOnce(async () => {
+        console.log(RISK_LINE);
+        return undefined;
+      });
+      const c = new MiClient(config);
+      await expect(c.init()).rejects.toBeInstanceOf(MiRiskControlError);
+      // 劫持期间的输出透传到了原函数（spy 即劫持前 console.log 的真身）
+      expect(logSpy).toHaveBeenCalledWith(RISK_LINE);
+      // finally 已恢复：console.log 回到劫持前的引用，后续正常 log 走原函数
+      expect(console.log).toBe(logSpy);
+      console.log("正常输出");
+      expect(logSpy).toHaveBeenCalledWith("正常输出");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("登录失败但无风控文案时仍抛通用错误（不误判风控）", async () => {
+    vi.mocked(getMiNA).mockResolvedValueOnce(undefined);
+    vi.mocked(getMiIOT).mockResolvedValueOnce(undefined);
+    const c = new MiClient(config);
+    const err = await c.init().then(
+      () => null,
+      (e) => e,
+    );
+    expect(err).not.toBeInstanceOf(MiRiskControlError);
+    expect((err as Error).message).toContain("小米云登录失败");
+  });
+
+  it("风控文案出现在 getMiIOT 阶段同样识别（两个域各自登录）", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      vi.mocked(getMiIOT).mockImplementationOnce(async () => {
+        console.log(RISK_LINE);
+        console.log("👉 " + AUTH_URL);
+        return undefined;
+      });
+      const c = new MiClient(config);
+      await expect(c.init()).rejects.toMatchObject({
+        name: "MiRiskControlError",
+        authUrl: AUTH_URL,
+      });
+    } finally {
+      logSpy.mockRestore();
     }
   });
 });

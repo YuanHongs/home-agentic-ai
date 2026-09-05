@@ -9,6 +9,41 @@ export interface RawMiDevice {
   room_name?: string;
 }
 
+/** mi-service-lite 风控分支输出的稳定子串（该库触发风控时只打 console.log 后返回 undefined） */
+const RISK_CONTROL_MARKER = "异地登录安全验证";
+/** 风控分支打印的授权链接域名前缀 */
+const AUTH_URL_PREFIX = "https://account.xiaomi.com/";
+
+/**
+ * 小米账号异地登录风控：mi-service-lite 触发风控时不抛错，只 console.log
+ * 文案 + 授权链接然后返回 undefined——调用方必须捕获 stdout 才能区分风控与
+ * 凭证错误。识别到风控时抛本错误，上层据此立即停止重试（每次重试都以新
+ * 随机 deviceId 登录，只会加重风控）。
+ */
+export class MiRiskControlError extends Error {
+  /** 库打印的授权链接（如有） */
+  readonly authUrl?: string;
+
+  constructor(authUrl?: string) {
+    super(
+      "已触发小米账号安全验证：请打开日志中的授权链接完成验证" +
+        "（两个域 xiaomiio 和 micoapi 可能需要分别授权），等待约 1 小时后再启动。" +
+        "期间请勿反复重试——每次重试都会以新设备身份登录，加重风控。",
+    );
+    this.name = "MiRiskControlError";
+    this.authUrl = authUrl;
+  }
+}
+
+/** 从劫持期间捕获的 console.log 输出中识别风控并提取授权链接 */
+function detectRiskControl(lines: string[]): { authUrl?: string } | undefined {
+  if (!lines.some((l) => l.includes(RISK_CONTROL_MARKER))) return undefined;
+  const urls = lines.join("\n").match(/https?:\/\/[^\s"'）)]+/g) ?? [];
+  // 优先小米账号域的链接（库的风控分支即打印该域），退而取首个 URL
+  const authUrl = urls.find((u) => u.startsWith(AUTH_URL_PREFIX)) ?? urls[0];
+  return { authUrl };
+}
+
 /**
  * 小米云协议封装：登录、对话轮询、TTS、任意设备 MIoT spec 控制。
  *
@@ -29,8 +64,26 @@ export class MiClient {
       password: this.config.miPassword,
       did: this.config.miDid,
     };
-    this.miNA = await getMiNA(account);
-    this.miIOT = await getMiIOT(account);
+    // mi-service-lite 触发风控时只 console.log 文案+授权链接然后返回 undefined，
+    // 错误类型无法从返回值拿到——init 期间劫持 console.log 捕获输出做识别。
+    // 输出仍透传原函数（授权链接必须让用户看到）；finally 保证恢复，即使
+    // 登录抛异常也不会留下被劫持的 console.log。
+    const captured: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      captured.push(args.map(String).join(" "));
+      originalLog(...args);
+    };
+    try {
+      this.miNA = await getMiNA(account);
+      this.miIOT = await getMiIOT(account);
+    } finally {
+      console.log = originalLog;
+    }
+    const risk = detectRiskControl(captured);
+    if (risk) {
+      throw new MiRiskControlError(risk.authUrl);
+    }
     if (!this.miNA || !this.miIOT) {
       throw new Error("小米云登录失败：请检查 MI_USER_ID / MI_PASSWORD / MI_DID");
     }
