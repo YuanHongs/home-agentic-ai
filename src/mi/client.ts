@@ -70,15 +70,24 @@ export class MiClient {
     // 登录抛异常也不会留下被劫持的 console.log。
     const captured: string[] = [];
     const originalLog = console.log;
-    console.log = (...args: unknown[]) => {
+    const wrapper = (...args: unknown[]) => {
       captured.push(args.map(String).join(" "));
       originalLog(...args);
     };
+    console.log = wrapper;
     try {
       this.miNA = await getMiNA(account);
+      // 风控若在 MiNA 阶段已触发，立即抛出——不再调 getMiIOT 多付一次
+      // "新随机 deviceId 登录"（每次失败登录都会加重风控）
+      const riskAfterNA = detectRiskControl(captured);
+      if (riskAfterNA) throw new MiRiskControlError(riskAfterNA.authUrl);
       this.miIOT = await getMiIOT(account);
     } finally {
-      console.log = originalLog;
+      // 条件恢复：仅当 console.log 仍是自己的 wrapper 时才还原，
+      // 防御嵌套劫持场景下覆盖掉别人的 wrapper（当前代码串行不可达，纯防御）
+      if (console.log === wrapper) {
+        console.log = originalLog;
+      }
     }
     const risk = detectRiskControl(captured);
     if (risk) {
