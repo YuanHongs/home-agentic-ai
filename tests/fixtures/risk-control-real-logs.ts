@@ -1,5 +1,5 @@
 /**
- * 真实小米风控日志样本（2026-09-05 真机联调触发，来自用户终端截图 OCR 还原）。
+ * 真实小米风控日志样本（2026-09-05 Windows 真机联调两次触发，来自用户终端截图 OCR 还原）。
  *
  * 价值：这是 mi-service-lite 风控分支的**真实输出格式**——包括授权链接
  * 在终端被折行截断的实际形态、以及混在日志里的正常失败响应
@@ -8,8 +8,8 @@
  * 注意：context 参数是随机一次性令牌，早已失效，无泄漏风险。
  */
 
-/** Mac 端首次触发（IoT 域 xiaomiio；链接被终端折行成多段） */
-export const MAC_XIAOMIIO_LOG = [
+/** Windows 首次触发（IoT 域 xiaomiio；链接被终端折行成多段） */
+export const WIN_XIAOMIIO_LOG = [
   "🔥 触发小米账号异地登录安全验证机制，请在浏览器打开以下链接，并按照网页提示授权验证账号：：",
   "👉 https://account.xiaomi.com/fe/service/identity/authStart?sid=xiaomiio&context=oRNeP4Bd6EOKiowBORS3WHqcJ31Kr08et-mUR4FFfkroG_t.Jh2L7HBqaaOuiON31ATiUZ1QP16stRKBye54ybQ80BPvDgEZGEnIGk94WV2eSnpxBJ3UzNnfS6m92r8mxLH4FbPLjHV-s-vtzmxmsIypq-1I06AA",
   "Lz_WFGFT5GdAMvHAHt6jXRMwbnHLWTd4WxhW8aYQOBth-8VQiGnLEQBQEAiFNalUfB5ILGJVCzTwMgbAxCNQRoxNKH-tQ0--YBA4WuRH3vDKNihndst0e10Vv7Pd6sXPmCx8rWiYKRkvNHOoDHma8M_vvmug6P",
@@ -23,7 +23,7 @@ export const MAC_XIAOMIIO_LOG = [
   "❌ 小米账号登录失败 &&&START&&& {\"notificationUrl\":\"https://account.xiaomi.com/fe/service/identity/authStart?sid=xiaomiio&context=oRNeP4Bd...\",\"result\":\"ok\",\"description\":\"成功\",\"pwd\":0}",
 ];
 
-/** Windows 端等 1 小时后仍触发（对话域 micoapi——证明两个域需分别授权） */
+/** Windows 等待 1 小时后重试仍触发（对话域 micoapi——证明两个域需分别授权） */
 export const WIN_MICOAPI_LOG = [
   "🔥 触发小米账号异地登录安全验证机制，请在浏览器打开以下链接，并按照网页提示授权验证账号：：",
   "👉 https://account.xiaomi.com/fe/service/identity/authStart?sid=micoapi&context=91XEBJgqO8FsceIDUHPdLOX_iiNDQN2ArqATDgY-LBOY84C8p8pCFESfoIxu004__5AinAAM_k4HqpnpM1PucrCHibqNDMDF56mXOrvjzFC",

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { detectRiskControl, MiRiskControlError } from "../src/mi/client.js";
 import {
-  MAC_XIAOMIIO_LOG,
+  WIN_XIAOMIIO_LOG,
   NORMAL_FAIL_LOG,
   WIN_MICOAPI_LOG,
 } from "./fixtures/risk-control-real-logs.js";
@@ -12,8 +12,8 @@ import {
  * 小米改文案/库改输出时这里最先红。
  */
 describe("风控识别·真实日志回放", () => {
-  it("Mac 首次触发（xiaomiio 域，链接被终端折行）：识别为风控并提取授权链接", () => {
-    const r = detectRiskControl(MAC_XIAOMIIO_LOG);
+  it("Windows 首次触发（xiaomiio 域，链接被终端折行）：识别为风控并提取授权链接", () => {
+    const r = detectRiskControl(WIN_XIAOMIIO_LOG);
     expect(r).toBeDefined();
     expect(r!.authUrl).toBeDefined();
     expect(r!.authUrl!.startsWith("https://account.xiaomi.com/")).toBe(true);
@@ -22,7 +22,7 @@ describe("风控识别·真实日志回放", () => {
     expect(r!.authUrl!).toContain("sid=xiaomiio");
   });
 
-  it("Windows 二次触发（micoapi 域——两个域需分别授权）：同样识别且链接域正确", () => {
+  it("Windows 授权后重试仍触发（micoapi 域——两个域需分别授权）：同样识别且链接域正确", () => {
     const r = detectRiskControl(WIN_MICOAPI_LOG);
     expect(r).toBeDefined();
     expect(r!.authUrl!).toContain("sid=micoapi");
