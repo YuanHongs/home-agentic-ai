@@ -35,8 +35,8 @@ export class MiRiskControlError extends Error {
   }
 }
 
-/** 从劫持期间捕获的 console.log 输出中识别风控并提取授权链接 */
-function detectRiskControl(lines: string[]): { authUrl?: string } | undefined {
+/** 从劫持期间捕获的 console.log 输出中识别风控并提取授权链接（导出供真实日志回放测试） */
+export function detectRiskControl(lines: string[]): { authUrl?: string } | undefined {
   if (!lines.some((l) => l.includes(RISK_CONTROL_MARKER))) return undefined;
   const urls = lines.join("\n").match(/https?:\/\/[^\s"'）)]+/g) ?? [];
   // 优先小米账号域的链接（库的风控分支即打印该域），退而取首个 URL
