@@ -71,7 +71,11 @@ export class MiClient {
     const captured: string[] = [];
     const originalLog = console.log;
     const wrapper = (...args: unknown[]) => {
-      captured.push(args.map(String).join(" "));
+      // 防御：极端参数（自定义 toString 抛异常）不该让 wrapper 抛——
+      // 捕获失败只丢这一条，透传不能断
+      try {
+        captured.push(args.map(String).join(" "));
+      } catch { /* 捕获失败可接受：识别不到风控时退化为普通登录失败 */ }
       originalLog(...args);
     };
     console.log = wrapper;
