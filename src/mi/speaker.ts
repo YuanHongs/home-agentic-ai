@@ -1,5 +1,6 @@
 import type { ConversationRecord } from "../types.js";
 import { matchTrigger } from "../agent/trigger.js";
+import { MiRiskControlError } from "./client.js";
 
 const FALLBACK_REPLY = "我脑子转不动了，稍后再试";
 /** 连续 poll 失败达到该次数才放弃进程（约 10+ 秒真凭证错误/长期断网/毒数据；瞬时抖动下轮自愈） */
@@ -21,6 +22,15 @@ export interface SpeakerDeps {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 风控识别：兼容真实类实例与结构化 mock 的鸭子形态。
+ * SpeakerDeps.client 是结构化接口（不引用 MiClient 具体类型），mock 抛的
+ * 错误只有 name 标识——instanceof 与 name 双重判断覆盖两种来源。
+ */
+const isRiskControlError = (err: unknown): boolean =>
+  err instanceof MiRiskControlError ||
+  (err instanceof Error && err.name === "MiRiskControlError");
 
 /**
  * 主循环：轮询 → 触发词 → 串行处理（pause 打断小爱 → LLM → TTS 播报）。
@@ -73,6 +83,9 @@ export class SpeakerLoop {
         await this.deps.client.ensureAlive(true);
       } catch (reloginErr) {
         this.deps.onError?.(reloginErr as Error);
+        // 小米账号风控：重登只会以新随机 deviceId 反复登录，火上浇油——
+        // 不进失败计数（10 次上限形同虚设），立即冒泡终止进程
+        if (isRiskControlError(reloginErr)) throw reloginErr;
         if (this.failCount >= MAX_RELOGIN_FAILURES) throw reloginErr;
         return false;
       }

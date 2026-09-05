@@ -218,6 +218,7 @@ async function getInstances(httpGet: (url: string) => Promise<unknown>): Promise
   return instancesInflight;
 }
 
+/** 仅测试消费的便利包装（生产路径请用 fetchSpecWithType——需要 deviceType 做类型白名单） */
 export async function fetchSpec(
   model: string,
   httpGet: (url: string) => Promise<unknown>,

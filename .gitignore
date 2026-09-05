@@ -2,3 +2,6 @@ node_modules/
 .env
 *.log
 .mi.json
+coverage/
+dist/
+.DS_Store

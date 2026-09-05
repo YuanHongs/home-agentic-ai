@@ -3,12 +3,15 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20.6"
+  },
   "scripts": {
     "dev": "tsx watch --env-file=.env src/app.ts",
     "start": "tsx --env-file=.env src/app.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "coverage": "vitest run --coverage"
   },
   "dependencies": {
     "mi-service-lite": "^3.1.0",
@@ -17,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@vitest/coverage-v8": "^2.1.9",
     "tsx": "^4.11.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"

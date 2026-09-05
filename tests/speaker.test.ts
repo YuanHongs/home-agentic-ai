@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SpeakerLoop } from "../src/mi/speaker.js";
+import { MiRiskControlError } from "../src/mi/client.js";
 import type { ConversationRecord } from "../src/types.js";
 
 interface MockDeps {
@@ -142,6 +143,37 @@ describe("SpeakerLoop", () => {
     await expect(loop.runOnce()).rejects.toThrow("relogin failed");
     expect(deps.client.ensureAlive).toHaveBeenCalledTimes(10);
     expect(deps.onError).toHaveBeenCalledWith(new Error("relogin failed"));
+  });
+
+  it("重登抛风控错误时第 1 次就冒泡终止（不计数到 10，风控下重试无意义）", async () => {
+    const deps = makeDeps({ messages: [] });
+    deps.onError = vi.fn();
+    deps.poller.poll = vi.fn(async () => {
+      throw new Error("auth expired");
+    });
+    // 结构化 client 接口的 mock 抛的是鸭子形态（name 标识）而非类实例
+    const riskErr = new Error("已触发小米账号安全验证：请打开授权链接完成验证");
+    riskErr.name = "MiRiskControlError";
+    deps.client.ensureAlive = vi.fn(async () => {
+      throw riskErr;
+    });
+    const loop = new SpeakerLoop(deps);
+    await expect(loop.runOnce()).rejects.toThrow("已触发小米账号安全验证");
+    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1); // 未重试
+    expect(deps.onError).toHaveBeenCalledWith(riskErr); // onError 打印完整指引
+  });
+
+  it("重登抛真实 MiRiskControlError 类实例时同样立即冒泡", async () => {
+    const deps = makeDeps({ messages: [] });
+    deps.poller.poll = vi.fn(async () => {
+      throw new Error("auth expired");
+    });
+    deps.client.ensureAlive = vi.fn(async () => {
+      throw new MiRiskControlError("https://account.xiaomi.com/identity/x");
+    });
+    const loop = new SpeakerLoop(deps);
+    await expect(loop.runOnce()).rejects.toBeInstanceOf(MiRiskControlError);
+    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1);
   });
 
   it("poll 成功后失败计数归零：抖动自愈后的失败重新计数", async () => {
