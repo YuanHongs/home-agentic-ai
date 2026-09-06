@@ -101,48 +101,111 @@ describe("SpeakerLoop", () => {
   });
 
   it("重登连续失败几次内不终止（容忍瞬时网络抖动），重登成功后 poll 自愈", async () => {
-    const deps = makeDeps({ messages: [] });
-    let pollHealed = false;
-    deps.poller.poll = vi.fn(async (): Promise<ConversationRecord | undefined> => {
-      if (pollHealed) return undefined;
-      throw new Error("auth expired");
-    });
-    let fails = 0;
-    deps.client.ensureAlive = vi.fn(async () => {
-      fails++;
-      if (fails <= 3) throw new Error("relogin failed");
-      pollHealed = true; // 重登成功，网络恢复
-    });
-    const loop = new SpeakerLoop(deps);
-    await expect(loop.runOnce()).resolves.toBeUndefined(); // 不冒泡
-    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(4); // 3 次失败 + 1 次成功
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+      const deps = makeDeps({ messages: [] });
+      let pollHealed = false;
+      deps.poller.poll = vi.fn(async (): Promise<ConversationRecord | undefined> => {
+        if (pollHealed) return undefined;
+        // 每次失败前越过 5 分钟节流窗口，保证重登被放行（隔离节流与计数的验证）
+        vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+        throw new Error("auth expired");
+      });
+      let fails = 0;
+      deps.client.ensureAlive = vi.fn(async () => {
+        fails++;
+        if (fails <= 3) throw new Error("relogin failed");
+        pollHealed = true; // 重登成功，网络恢复
+      });
+      const loop = new SpeakerLoop(deps);
+      await expect(loop.runOnce()).resolves.toBeUndefined(); // 不冒泡
+      expect(deps.client.ensureAlive).toHaveBeenCalledTimes(4); // 3 次失败 + 1 次成功
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("poll 持续失败但重登一直成功时也累积计数，10 次后冒泡（防无限重登风暴）", async () => {
+  it("CR7 重登节流：节流窗口内连续 poll 失败只重登 1 次，10 次后仍冒泡退出（登录风暴免疫）", async () => {
     const deps = makeDeps({ messages: [] });
     deps.onError = vi.fn();
     deps.poller.poll = vi.fn(async () => {
-      throw new Error("poison data"); // 毒数据/限流：poll 持续失败
+      throw new Error("poison data"); // 毒数据/限流/断网：poll 持续失败
     });
     deps.client.ensureAlive = vi.fn(async () => {}); // 重登永远成功（登录态正常）
     const loop = new SpeakerLoop(deps);
     await expect(loop.runOnce()).rejects.toThrow("poison data");
-    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(10);
+    // 10 次失败全部落在同一 5 分钟窗口内：强制重登只发生 1 次（节流生效），
+    // 但失败计数照常累积到 10 次冒泡——fail-fast 语义不变，登录次数被节流
+    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1);
   });
 
-  it("重登连续失败达到 10 次才冒泡终止（真凭证错误/长期断网）", async () => {
-    const deps = makeDeps({ messages: [] });
-    deps.onError = vi.fn();
-    deps.poller.poll = vi.fn(async () => {
-      throw new Error("auth expired");
-    });
-    deps.client.ensureAlive = vi.fn(async () => {
-      throw new Error("relogin failed");
-    });
-    const loop = new SpeakerLoop(deps);
-    await expect(loop.runOnce()).rejects.toThrow("relogin failed");
-    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(10);
-    expect(deps.onError).toHaveBeenCalledWith(new Error("relogin failed"));
+  it("CR7 重登节流：距上次重登超过 5 分钟的失败允许再次重登（token 过期自愈最多延迟 5 分钟）", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+      const deps = makeDeps({ messages: [] });
+      let failures = 0;
+      deps.poller.poll = vi.fn(async (): Promise<ConversationRecord | undefined> => {
+        failures++;
+        if (failures === 2) vi.setSystemTime(Date.now() + 5 * 60_000 + 1); // 越过节流窗口
+        if (failures <= 2) throw new Error("auth expired");
+        return undefined; // 重登后 poll 自愈
+      });
+      deps.client.ensureAlive = vi.fn(async () => {});
+      const loop = new SpeakerLoop(deps);
+      await loop.runOnce();
+      expect(deps.client.ensureAlive).toHaveBeenCalledTimes(2); // 窗口外第 2 次重登被放行
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("重登连续失败达到 10 次才冒泡终止（真凭证错误/长期断网，每次重登越过节流窗口）", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+      const deps = makeDeps({ messages: [] });
+      deps.onError = vi.fn();
+      deps.poller.poll = vi.fn(async () => {
+        // 长期断网：每次失败间隔超过 5 分钟（节流放行 → 重登被真正尝试）
+        vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+        throw new Error("auth expired");
+      });
+      deps.client.ensureAlive = vi.fn(async () => {
+        throw new Error("relogin failed");
+      });
+      const loop = new SpeakerLoop(deps);
+      await expect(loop.runOnce()).rejects.toThrow("relogin failed");
+      expect(deps.client.ensureAlive).toHaveBeenCalledTimes(10);
+      expect(deps.onError).toHaveBeenCalledWith(new Error("relogin failed"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("CR7 节流不影响风控识别：放行的重登抛风控错误时第 1 次就冒泡（不计数到 10）", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+      const deps = makeDeps({ messages: [] });
+      deps.poller.poll = vi.fn(async () => {
+        // 每次失败都越过窗口：节流不挡重登，风控识别优先于失败计数
+        vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+        throw new Error("auth expired");
+      });
+      // 结构化 client 接口的 mock 抛的是鸭子形态（name 标识）而非类实例
+      const riskErr = new Error("已触发小米账号安全验证：请打开授权链接完成验证");
+      riskErr.name = "MiRiskControlError";
+      deps.client.ensureAlive = vi.fn(async () => {
+        throw riskErr;
+      });
+      const loop = new SpeakerLoop(deps);
+      await expect(loop.runOnce()).rejects.toThrow("已触发小米账号安全验证");
+      expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1); // 风控下不重试
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("重登抛风控错误时第 1 次就冒泡终止（不计数到 10，风控下重试无意义）", async () => {
@@ -177,51 +240,71 @@ describe("SpeakerLoop", () => {
   });
 
   it("poll 成功后失败计数归零：抖动自愈后的失败重新计数", async () => {
-    const deps = makeDeps({ messages: [{ text: "请开灯", timestamp: 100 }] });
-    let pollShouldFail = true;
-    const originalPoll = deps.poller.poll;
-    deps.poller.poll = vi.fn(async () => {
-      if (pollShouldFail) throw new Error("auth expired");
-      return originalPoll();
-    });
-    let reloginFailures = 0;
-    deps.client.ensureAlive = vi.fn(async () => {
-      reloginFailures++;
-      if (reloginFailures <= 3) throw new Error("relogin failed");
-      pollShouldFail = false; // 重登成功，网络恢复
-    });
-    const loop = new SpeakerLoop(deps);
-    await loop.runOnce();
-    expect(deps.agent.chat).toHaveBeenCalledTimes(1); // 自愈后正常处理消息
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+      const deps = makeDeps({ messages: [{ text: "请开灯", timestamp: 100 }] });
+      let pollShouldFail = true;
+      const originalPoll = deps.poller.poll;
+      deps.poller.poll = vi.fn(async () => {
+        if (pollShouldFail) {
+          // 每次失败都越过节流窗口，保证重登被放行（隔离节流与计数的验证）
+          vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+          throw new Error("auth expired");
+        }
+        return originalPoll();
+      });
+      let reloginFailures = 0;
+      deps.client.ensureAlive = vi.fn(async () => {
+        reloginFailures++;
+        if (reloginFailures <= 3) throw new Error("relogin failed");
+        pollShouldFail = false; // 重登成功，网络恢复
+      });
+      const loop = new SpeakerLoop(deps);
+      await loop.runOnce();
+      expect(deps.agent.chat).toHaveBeenCalledTimes(1); // 自愈后正常处理消息
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("失败计数按'连续'而非累计：3败1成再7败（累计 10、最大连续 7）不终止且继续处理消息", async () => {
-    // 变异测试盲区修复：旧断言只查 chat 调用次数，从未验证计数器本身——
-    // 删掉 poll 成功处的 failCount=0 后旧测试仍全绿。本用例构造
-    // "3 败 → 1 成 → 7 败"：累计失败 10 次，但最大连续仅 7 次（< 10）。
-    // 有归零：进程存活，自愈后正常处理消息；无归零：第 10 次累计失败
-    // （第二段第 7 败）时 step 冒泡终止进程。
-    const deps = makeDeps({ messages: [{ text: "请开灯", timestamp: 100 }] });
-    const script: Array<"fail" | "ok"> = [
-      "fail", "fail", "fail", // 第一段：3 次瞬时失败
-      "ok", // 1 次成功：失败计数应归零
-      "fail", "fail", "fail", "fail", "fail", "fail", "fail", // 第二段：7 败（累计第 10 次失败）
-      "ok", // 网络恢复，处理积压消息
-    ];
-    let i = 0;
-    const originalPoll = deps.poller.poll;
-    deps.poller.poll = vi.fn(async (): Promise<ConversationRecord | undefined> => {
-      const step = script[i];
-      if (i < script.length) i++;
-      if (step === "fail") throw new Error("auth expired");
-      return originalPoll();
-    });
-    deps.client.ensureAlive = vi.fn(async () => {}); // 重登永远成功（瞬时抖动）
-    const loop = new SpeakerLoop(deps);
-    await expect(loop.runOnce()).resolves.toBeUndefined(); // 不冒泡（最大连续 7 < 10）
-    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(10); // 3 + 7 次失败各触发一次重登
-    expect(deps.agent.chat).toHaveBeenCalledTimes(1); // 自愈后仍正常处理消息
-    expect(deps.agent.chat).toHaveBeenCalledWith("开灯");
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+      // 变异测试盲区修复：旧断言只查 chat 调用次数，从未验证计数器本身——
+      // 删掉 poll 成功处的 failCount=0 后旧测试仍全绿。本用例构造
+      // "3 败 → 1 成 → 7 败"：累计失败 10 次，但最大连续仅 7 次（< 10）。
+      // 有归零：进程存活，自愈后正常处理消息；无归零：第 10 次累计失败
+      // （第二段第 7 败）时 step 冒泡终止进程。
+      const deps = makeDeps({ messages: [{ text: "请开灯", timestamp: 100 }] });
+      const script: Array<"fail" | "ok"> = [
+        "fail", "fail", "fail", // 第一段：3 次瞬时失败
+        "ok", // 1 次成功：失败计数应归零
+        "fail", "fail", "fail", "fail", "fail", "fail", "fail", // 第二段：7 败（累计第 10 次失败）
+        "ok", // 网络恢复，处理积压消息
+      ];
+      let i = 0;
+      const originalPoll = deps.poller.poll;
+      deps.poller.poll = vi.fn(async (): Promise<ConversationRecord | undefined> => {
+        const step = script[i];
+        if (i < script.length) i++;
+        if (step === "fail") {
+          // 每次失败都越过节流窗口（保证 10 次失败各触发一次重登，与旧语义对齐）
+          vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+          throw new Error("auth expired");
+        }
+        return originalPoll();
+      });
+      deps.client.ensureAlive = vi.fn(async () => {}); // 重登永远成功（瞬时抖动）
+      const loop = new SpeakerLoop(deps);
+      await expect(loop.runOnce()).resolves.toBeUndefined(); // 不冒泡（最大连续 7 < 10）
+      expect(deps.client.ensureAlive).toHaveBeenCalledTimes(10); // 3 + 7 次失败各触发一次重登
+      expect(deps.agent.chat).toHaveBeenCalledTimes(1); // 自愈后仍正常处理消息
+      expect(deps.agent.chat).toHaveBeenCalledWith("开灯");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("handle 开头打印 🔥 触发日志（成功路径可观测）", async () => {

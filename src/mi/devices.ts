@@ -233,7 +233,9 @@ export class MiDeviceService implements IRemoteDevice {
   /**
    * S3 值类型与范围校验（property 类能力）：不匹配返回自纠消息，不发起云端调用。
    * - bool → 必须 boolean；数值类 format → 必须 number 且在 value-range 内（有约束时）
-   * - string → 必须 string；未知 format 不校验（spec 新格式前向兼容）
+   * - string → 必须 string；带 value-list 枚举 → 必须命中枚举值之一
+   * - 未知/缺失 format 仅放行基础类型（对象/数组拒绝，与 action 路径对称——
+   *   spec 新格式前向兼容，但结构化值不透传云端）
    * - value 缺省（undefined）要求必传（property 类）
    */
   private validatePropertyValue(cap: DeviceCapability, value: unknown): string | undefined {
@@ -254,6 +256,16 @@ export class MiDeviceService implements IRemoteDevice {
     }
     if (fmt === "string" && typeof value !== "string") {
       return `值 ${describeValue(value)} 不符合能力 ${cap.desc} 的格式（期望 ${expectDesc(cap)}）`;
+    }
+    // value-list 枚举校验：列出合法值供 LLM 自纠（对 LLM 最有用的信息）
+    if (cap.values && !cap.values.includes(value)) {
+      return `值 ${describeValue(value)} 不在能力 ${cap.desc} 的可选值（${cap.values.map(describeValue).join("/")}）内`;
+    }
+    // 未知/缺失 format 的最小防御：基础类型放行（前向兼容），对象/数组拒绝
+    if (fmt !== "bool" && !NUMBER_FORMAT_RE.test(fmt) && fmt !== "string") {
+      if (typeof value === "object" && value !== null) {
+        return `值 ${describeValue(value)} 不符合能力 ${cap.desc} 的格式（期望 ${expectDesc(cap)}，不支持对象或数组）`;
+      }
     }
     return undefined;
   }

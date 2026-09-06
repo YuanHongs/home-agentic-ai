@@ -143,6 +143,45 @@ const makeTypedService = (client: MockClient = makeTypedClient()) =>
     fetchSpecJson: async () => specOf(typedSpec, "light"),
   });
 
+/** CR7 枚举/未知格式 spec：uint8+value-list 枚举 / 无 format 能力，用于值校验测试 */
+const enumSpec = {
+  services: [
+    {
+      iid: 2,
+      description: "Fan",
+      properties: [
+        {
+          iid: 1,
+          description: "Fan Level",
+          comment: "风速",
+          format: "uint8",
+          access: ["write"],
+          "value-list": [
+            { value: 0, description: "Auto" },
+            { value: 1, description: "Low" },
+            { value: 2, description: "High" },
+          ],
+        },
+        { iid: 2, description: "Mystery", comment: "未知格式能力", access: ["write"] },
+      ],
+      actions: [],
+    },
+  ],
+};
+
+const makeEnumClient = (): MockClient => ({
+  ...makeClient(),
+  listRawDevices: vi.fn(async () => [
+    { did: "did.enum", name: "客厅风扇", model: "fake.fan" },
+  ]),
+} as unknown as MockClient);
+
+const makeEnumService = (client: MockClient = makeEnumClient()) =>
+  new MiDeviceService({
+    client: client as unknown as MiClient,
+    fetchSpecJson: async () => specOf(enumSpec, "fan"),
+  });
+
 /** 目录含两盏同名后缀主灯，用于验证模糊匹配的歧义消解 */
 const makeTwoLightsClient = (): MockClient => ({
   ...makeClient(),
@@ -394,6 +433,41 @@ describe("MiDeviceService", () => {
     const r = await svc.executeAction("did.typed", "Blink", [1, "快"]);
     expect(r.ok).toBe(true);
     expect(client.specAction).toHaveBeenCalledWith("did.typed", 2, 1, [1, "快"]);
+  });
+
+  it("S3 value-list 枚举能力传非法值被拒并列出合法值，不发起云端调用", async () => {
+    const client = makeEnumClient();
+    const svc = makeEnumService(client);
+    const r = await svc.executeAction("did.enum", "Fan Level", 7);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("风速");
+    expect(r.message).toContain("0/1/2"); // 合法值列表供 LLM 自纠
+    expect(client.specSet).not.toHaveBeenCalled();
+  });
+
+  it("S3 value-list 枚举能力传合法值通过并执行", async () => {
+    const client = makeEnumClient();
+    const svc = makeEnumService(client);
+    const r = await svc.executeAction("did.enum", "Fan Level", 1);
+    expect(r.ok).toBe(true);
+    expect(client.specSet).toHaveBeenCalledWith("did.enum", 2, 1, 1);
+  });
+
+  it("S3 未知 format 能力传对象被拒（最小防御，与 action 路径对称），不发起云端调用", async () => {
+    const client = makeEnumClient();
+    const svc = makeEnumService(client);
+    const r = await svc.executeAction("did.enum", "Mystery", { a: 1 });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("不支持对象或数组");
+    expect(client.specSet).not.toHaveBeenCalled();
+  });
+
+  it("S3 未知 format 能力传基础类型值放行（spec 新格式前向兼容）", async () => {
+    const client = makeEnumClient();
+    const svc = makeEnumService(client);
+    const r = await svc.executeAction("did.enum", "Mystery", 42);
+    expect(r.ok).toBe(true);
+    expect(client.specSet).toHaveBeenCalledWith("did.enum", 2, 2, 42);
   });
 
   it("S5 denylist 大小写不敏感：'Lock' 命中 model 'lumi.lock.acn001'", async () => {

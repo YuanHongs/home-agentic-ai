@@ -5,6 +5,14 @@ import { MiRiskControlError } from "./client.js";
 const FALLBACK_REPLY = "我脑子转不动了，稍后再试";
 /** 连续 poll 失败达到该次数才放弃进程（约 10+ 秒真凭证错误/长期断网/毒数据；瞬时抖动下轮自愈） */
 const MAX_RELOGIN_FAILURES = 10;
+/**
+ * 重登全局频率上限（CR7）：mi-service-lite 把一切错误（超时/断网/5xx/token 失效）
+ * 折叠成 undefined，上层无法区分错误类型——只能给强制重登本身加节流。
+ * 深夜断网时"poll 失败 → 全量重登（两次密码登录）→ 10 次退出 → restart=always 拉起
+ * 重来"的回路，等于对 account.xiaomi.com 的自动登录轰炸（风控锁号）。节流后登录
+ * 次数最多每 5 分钟 1 次。取舍：token 真过期时的自愈最多延迟 5 分钟，换来风暴免疫。
+ */
+const MIN_RELOGIN_INTERVAL_MS = 5 * 60_000;
 /** TTS 语速启发式：约 4 字/秒，用于估测上一条播报剩余时长 */
 const TTS_MS_PER_CHAR = 250;
 
@@ -43,6 +51,8 @@ export class SpeakerLoop {
   private pendingCount = 0;
   /** 连续 poll 失败计数：poll 成功即归零 */
   private failCount = 0;
+  /** 上次强制重登时刻（CR7 节流）：窗口内跳过重登，只记失败与日志 */
+  private lastReloginAt = 0;
   /** 上一条 TTS 的下发时刻与字数（估测播完时长用，见 handle） */
   private lastSpeakAt = 0;
   private lastSpeakChars = 0;
@@ -79,15 +89,22 @@ export class SpeakerLoop {
       // MAX_RELOGIN_FAILURES 次失败（约 10+ 秒）后冒泡终止进程交给进程
       // 管理器，瞬时抖动由下轮 poll 自愈
       this.failCount++;
-      try {
-        await this.deps.client.ensureAlive(true);
-      } catch (reloginErr) {
-        this.deps.onError?.(reloginErr as Error);
-        // 小米账号风控：重登只会以新随机 deviceId 反复登录，火上浇油——
-        // 不进失败计数（10 次上限形同虚设），立即冒泡终止进程
-        if (isRiskControlError(reloginErr)) throw reloginErr;
-        if (this.failCount >= MAX_RELOGIN_FAILURES) throw reloginErr;
-        return false;
+      // CR7 重登节流：距上次强制重登不足 MIN_RELOGIN_INTERVAL_MS 时跳过重登
+      // （只保留上面的 onError 日志与失败计数——长断网仍 fail-fast 到 10 次退出，
+      // 但登录次数被节流为最多每 5 分钟 1 次，掐断"断网→退出→拉起→登录风暴"回路）
+      if (Date.now() - this.lastReloginAt >= MIN_RELOGIN_INTERVAL_MS) {
+        this.lastReloginAt = Date.now();
+        try {
+          await this.deps.client.ensureAlive(true);
+        } catch (reloginErr) {
+          this.deps.onError?.(reloginErr as Error);
+          // 小米账号风控：重登只会以新随机 deviceId 反复登录，火上浇油——
+          // 不进失败计数（10 次上限形同虚设），立即冒泡终止进程。
+          // 该检查优先于一切节流/计数逻辑：风控不重试，节流也不挡它的识别
+          if (isRiskControlError(reloginErr)) throw reloginErr;
+          if (this.failCount >= MAX_RELOGIN_FAILURES) throw reloginErr;
+          return false;
+        }
       }
       if (this.failCount >= MAX_RELOGIN_FAILURES) throw err;
       return false;

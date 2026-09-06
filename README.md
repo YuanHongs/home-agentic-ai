@@ -154,7 +154,7 @@ LLM 能看到你家全部米家设备及其"能力"（开关/亮度/色温/目�
 ## 8. 测试与开发
 
 ```bash
-npm test            # 154 个单元测试（全部 mock，不联网）
+npm test            # 160 个单元测试（全部 mock，不联网）
 npm run coverage    # 测试 + 覆盖率报告
 npm run typecheck   # TS 类型检查
 ```
