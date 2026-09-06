@@ -85,7 +85,7 @@ export function parseSpec(model: string, specJson: unknown): DeviceCapability[] 
         format: prop.format,
         access: prop.access,
         ...(constraint ? { constraint } : {}),
-        ...(values ? { values } : {}),
+        ...(values?.length ? { values } : {}),
       });
     }
     for (const act of svc.actions ?? []) {
