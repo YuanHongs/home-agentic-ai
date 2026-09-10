@@ -63,6 +63,16 @@ export interface Config {
 }
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
+  // Windows 记事本常见陷阱：UTF-8 BOM 让首个 key 变 "\uFEFFMI_USER_ID"（报 Required 误导排障）；
+  // ANSI/GBK 保存让中文变 \uFFFD 替换符（触发词永不命中、全程零报错）——前置检测给明确指引
+  for (const [k, v] of Object.entries(env)) {
+    if (v && (v.includes("\uFEFF") || v.includes("\uFFFD"))) {
+      throw new Error(
+        `配置 ${k} 含乱码（BOM 或非 UTF-8 编码）。请用 VS Code 打开 .env，` +
+          `右下角编码选 "通过编码保存 → UTF-8"（不带 BOM）后重试`,
+      );
+    }
+  }
   const parsed = envSchema.safeParse(env);
   if (!parsed.success) {
     // 带上校验消息（如 min(500) 的"最低 500ms"提示），不能只报字段名

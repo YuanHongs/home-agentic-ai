@@ -92,11 +92,20 @@ describe("SpeakerLoop", () => {
       }
       return originalPoll();
     });
-    const loop = new SpeakerLoop(deps);
-    await loop.runOnce();
-    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1);
-    // 不带 force 的 ensureAlive 在 token 过期但实例仍在时空转，必须强制重登
-    expect(deps.client.ensureAlive).toHaveBeenCalledWith(true);
+    // lastReloginAt 初始化为构造时刻（CR8）：把时钟先定在过去，构造后再前进 6 分钟，
+    // 使首个失败落在节流窗口之外（与旧行为"首次失败必重登"语义一致）
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      const loop = new SpeakerLoop(deps);
+      vi.setSystemTime(new Date("2026-01-01T00:06:00Z"));
+      await loop.runOnce();
+      expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1);
+      // 不带 force 的 ensureAlive 在 token 过期但实例仍在时空转，必须强制重登
+      expect(deps.client.ensureAlive).toHaveBeenCalledWith(true);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(deps.agent.chat).toHaveBeenCalledTimes(1);
   });
 
@@ -135,9 +144,10 @@ describe("SpeakerLoop", () => {
     deps.client.ensureAlive = vi.fn(async () => {}); // 重登永远成功（登录态正常）
     const loop = new SpeakerLoop(deps);
     await expect(loop.runOnce()).rejects.toThrow("poison data");
-    // 10 次失败全部落在同一 5 分钟窗口内：强制重登只发生 1 次（节流生效），
-    // 但失败计数照常累积到 10 次冒泡——fail-fast 语义不变，登录次数被节流
-    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1);
+    // 10 次失败全部落在启动后的同一 5 分钟窗口内（CR8 起 lastReloginAt 锚定构造时刻，
+    // 启动时刚登录过）：一次重登都不发生，失败计数照常累积到 10 次冒泡——
+    // fail-fast 语义不变，瞬时毒数据下零多余登录
+    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(0);
   });
 
   it("CR7 重登节流：距上次重登超过 5 分钟的失败允许再次重登（token 过期自愈最多延迟 5 分钟）", async () => {
@@ -148,7 +158,9 @@ describe("SpeakerLoop", () => {
       let failures = 0;
       deps.poller.poll = vi.fn(async (): Promise<ConversationRecord | undefined> => {
         failures++;
-        if (failures === 2) vi.setSystemTime(Date.now() + 5 * 60_000 + 1); // 越过节流窗口
+        // 构造时刻即锚点（CR8）：每次失败前都推进过 5 分钟窗口，
+        // 两次失败各自放行一次重登（token 过期自愈路径）
+        vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
         if (failures <= 2) throw new Error("auth expired");
         return undefined; // 重登后 poll 自愈
       });
@@ -190,7 +202,8 @@ describe("SpeakerLoop", () => {
       vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
       const deps = makeDeps({ messages: [] });
       deps.poller.poll = vi.fn(async () => {
-        // 每次失败都越过窗口：节流不挡重登，风控识别优先于失败计数
+        // 每次失败都越过窗口（构造时刻 + 5 分钟：lastReloginAt 锚定启动时刻）：
+        // 节流不挡重登，风控识别优先于失败计数
         vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
         throw new Error("auth expired");
       });
@@ -209,9 +222,13 @@ describe("SpeakerLoop", () => {
   });
 
   it("重登抛风控错误时第 1 次就冒泡终止（不计数到 10，风控下重试无意义）", async () => {
+    vi.useFakeTimers();
+    try {
     const deps = makeDeps({ messages: [] });
     deps.onError = vi.fn();
     deps.poller.poll = vi.fn(async () => {
+      // 越过启动节流窗口，让首个失败就能触发重登（风控从重登中暴露）
+      vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
       throw new Error("auth expired");
     });
     // 结构化 client 接口的 mock 抛的是鸭子形态（name 标识）而非类实例
@@ -224,19 +241,29 @@ describe("SpeakerLoop", () => {
     await expect(loop.runOnce()).rejects.toThrow("已触发小米账号安全验证");
     expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1); // 未重试
     expect(deps.onError).toHaveBeenCalledWith(riskErr); // onError 打印完整指引
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("重登抛真实 MiRiskControlError 类实例时同样立即冒泡", async () => {
-    const deps = makeDeps({ messages: [] });
-    deps.poller.poll = vi.fn(async () => {
-      throw new Error("auth expired");
-    });
-    deps.client.ensureAlive = vi.fn(async () => {
-      throw new MiRiskControlError("https://account.xiaomi.com/identity/x");
-    });
-    const loop = new SpeakerLoop(deps);
-    await expect(loop.runOnce()).rejects.toBeInstanceOf(MiRiskControlError);
-    expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
+    try {
+      const deps = makeDeps({ messages: [] });
+      deps.poller.poll = vi.fn(async () => {
+        // 越过启动节流窗口，让首个失败就触发重登
+        vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+        throw new Error("auth expired");
+      });
+      deps.client.ensureAlive = vi.fn(async () => {
+        throw new MiRiskControlError("https://account.xiaomi.com/identity/x");
+      });
+      const loop = new SpeakerLoop(deps);
+      await expect(loop.runOnce()).rejects.toBeInstanceOf(MiRiskControlError);
+      expect(deps.client.ensureAlive).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("poll 成功后失败计数归零：抖动自愈后的失败重新计数", async () => {

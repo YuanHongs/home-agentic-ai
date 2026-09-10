@@ -157,19 +157,26 @@ export class MiDeviceService implements IRemoteDevice {
       (this.opts.refreshMs === undefined || Date.now() - (this.cachedAt ?? 0) < this.opts.refreshMs);
     if (fresh) return this.cache!;
     const raw = (await this.opts.client.listRawDevices()).filter((d) => !this.isDenied(d));
-    const devices = await Promise.all(
-      raw.map(async (d): Promise<DeviceInfo> => {
-        const { caps, deviceType } = await this.capabilitiesFor(d.model);
-        return {
-          did: d.did,
-          name: d.name,
-          model: d.model,
-          room: d.room_name,
-          deviceType,
-          capabilities: caps,
-        };
-      }),
-    );
+    // 同型号设备（如三盏同款灯）只拉一次 spec：capCache 只在完成后写入，
+    // 并发 miss 会重复拉同一 model——先去重 model 串行解析，再映射回每台设备
+    const uniqueModels = [...new Set(raw.map((d) => d.model))];
+    // 串行预热（同型号只拉一次 + 避免并发打 miot-spec.org）；
+    // 瞬时失败不落缓存 → get 可能 miss，回退 capabilitiesFor 拿返回值
+    const capsByModel = new Map<string, { caps: DeviceCapability[]; deviceType?: string }>();
+    for (const model of uniqueModels) {
+      capsByModel.set(model, await this.capabilitiesFor(model));
+    }
+    const devices = raw.map((d) => {
+      const { caps, deviceType } = capsByModel.get(d.model)!;
+      return {
+        did: d.did,
+        name: d.name,
+        model: d.model,
+        room: d.room_name,
+        deviceType,
+        capabilities: caps,
+      };
+    });
     this.cache = devices;
     this.cachedAt = Date.now();
     return devices;

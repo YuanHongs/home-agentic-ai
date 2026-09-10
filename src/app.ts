@@ -55,7 +55,11 @@ async function main() {
     refreshMs: config.deviceRefreshMs,
     onRefreshError: (e) => console.error("[cache] 刷新失败（保留旧快照）:", e.message),
   });
+  // 首次目录构建要拉全量 instances（~3MB）+ 每型号一个 spec，家庭宽带约 15~60 秒——
+  // 没有进度提示用户会误判挂死而重启（重启即风控敏感操作）
+  console.log("[app] 正在构建首次设备目录（约 15~60 秒，期间说话不会被响应）...");
   await cache.refresh(); // 启动前先建快照
+  console.log(`[app] 设备目录就绪：${cache.snapshot().length} 台`);
   cache.start();
 
   const agent = new Agent({
@@ -87,6 +91,7 @@ async function main() {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown); // Docker 停止容器的默认信号
+  process.on("SIGHUP", shutdown); // Windows 任务管理器"结束任务"/taskkill 不带 /F
   await loop.start();
 }
 

@@ -52,7 +52,7 @@ export class SpeakerLoop {
   /** 连续 poll 失败计数：poll 成功即归零 */
   private failCount = 0;
   /** 上次强制重登时刻（CR7 节流）：窗口内跳过重登，只记失败与日志 */
-  private lastReloginAt = 0;
+  private lastReloginAt = Date.now(); // 启动时刚登录成功，首个 poll 失败不该立即全量重登（可能是瞬时抖动）
   /** 上一条 TTS 的下发时刻与字数（估测播完时长用，见 handle） */
   private lastSpeakAt = 0;
   private lastSpeakChars = 0;
